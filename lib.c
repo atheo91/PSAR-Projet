@@ -16,7 +16,8 @@
 #define SIZE_PAGE 16
 
 typedef struct{
-	char * proprietaire;
+	int numReader;
+	struct sockaddr * proprietaire;
 	void * pointer;
 }SPAGE;
 
@@ -63,13 +64,15 @@ void * InitMaster(int size) {
 	for(int i = 0; i <= (size/SIZE_PAGE); i++){
 		//printf("%d\n", i);
 		memoryData.tabPage[i] = (SPAGE *)malloc(sizeof(SPAGE));
-		memoryData.tabPage[i]->proprietaire = "\0";
+		memoryData.tabPage[i]->proprietaire = NULL;
 		memoryData.tabPage[i]->pointer = addr+(i*SIZE_PAGE);
+		memoryData.tabPage[i]->numReader = 0;
 		if(i == (size/16) && modulo != 0){
 			memoryData.numPage += 1;
 			memoryData.tabPage[i+1] = (SPAGE *)malloc(sizeof(SPAGE));
-			memoryData.tabPage[i+1]->proprietaire = "\0";
+			memoryData.tabPage[i+1]->proprietaire = NULL;
 			memoryData.tabPage[i+1]->pointer = addr+((i+1)*SIZE_PAGE);
+			memoryData.tabPage[i]->numReader = 0;
 		}
 	}
 	
