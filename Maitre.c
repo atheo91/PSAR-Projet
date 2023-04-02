@@ -7,14 +7,40 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#define PORT 10000
-#define NB_CLIENTS 10
-#define SIZE 128
+#include "lib.h"
+
+typedef struct{
+	int id;
+	char * data[1024];
+}DATA;
+
 
 int main(int argc, char** argv) {
 
-	// CREATION MEMOIRE PARTAGEE
-	int fd;
+	//Initialisation mémoire partagée (Test de InitMaitre)
+
+	DATA * memory = (DATA *) InitMaster(sizeof(DATA));
+
+	memory->id = 3;
+	for(int i = 0; i<= 1023; i++){
+		memory->data[i] = "Coucou\0";
+	}
+
+	printf("ID : %d\nDATA 1000 : %s\n", memory->id, memory->data[1000]);
+
+	munmap(memory, sizeof(DATA));
+	return 0;
+}
+
+
+
+
+
+
+
+
+// CREATION MEMOIRE PARTAGEE
+	/*int fd;
 	if((fd = shm_open("/memoire", O_CREAT | O_RDWR, 0600)) < 0) {
 		perror("shm_open");
 		exit(5);
@@ -85,5 +111,4 @@ int main(int argc, char** argv) {
 	close(fd);
 	shm_unlink("/memoire");
 
-	return 0;
-}
+	return 0;*/
