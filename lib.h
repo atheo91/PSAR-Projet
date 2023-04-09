@@ -4,6 +4,8 @@ void *InitMaster(int size);
 
 void LoopMaster();
 
+void endMaster(void * data, int size);
+
 void *InitSlave(char *HostMaster);
 
 void lock_read(void *adr, int s);

@@ -9,24 +9,47 @@
 #include <netdb.h>
 #include <stdbool.h>
 #include <string.h>
+#include <linux/userfaultfd.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
 
-#define PORT 10010
+#define PORT_MAITRE 10011
+#define PORT_ESCLAVE 10012
 #define NB_ESCLAVE_MAX 10
 #define NB_PAGE_MAX 1024
-#define SIZE_PAGE 16
 
+//Donnée répartie example
+typedef struct{
+	int id;
+	char * data[2048];
+}DATA;
+//Donnée d'une page
 typedef struct{
 	int numReader;
 	struct sockaddr * proprietaire;
 	void * pointer;
 }SPAGE;
-
+//Donnée de la mémoire partagée
 typedef struct{
+	long sizePage;
 	int numPage;
 	SPAGE * tabPage[NB_PAGE_MAX];
 }SMEMORY;
 
-SMEMORY memoryData;
+static SMEMORY * memoryData;
 
 void * InitMaster(int size) {
 	printf("Initialisation Master:\n");
@@ -57,26 +80,45 @@ void * InitMaster(int size) {
 
 	printf("-Virtualization\n");
 
-	memoryData.numPage = size/SIZE_PAGE;
-	int modulo = size%SIZE_PAGE;
+	//Alloue la mémoire partagée
 
-	//test, page de taille SIZE_PAGE(16) octets
-	for(int i = 0; i <= (size/SIZE_PAGE); i++){
-		//printf("%d\n", i);
-		memoryData.tabPage[i] = (SPAGE *)malloc(sizeof(SPAGE));
-		memoryData.tabPage[i]->proprietaire = NULL;
-		memoryData.tabPage[i]->pointer = addr+(i*SIZE_PAGE);
-		memoryData.tabPage[i]->numReader = 0;
-		if(i == (size/16) && modulo != 0){
-			memoryData.numPage += 1;
-			memoryData.tabPage[i+1] = (SPAGE *)malloc(sizeof(SPAGE));
-			memoryData.tabPage[i+1]->proprietaire = NULL;
-			memoryData.tabPage[i+1]->pointer = addr+((i+1)*SIZE_PAGE);
-			memoryData.tabPage[i]->numReader = 0;
+	if((memoryData = malloc(sizeof(SMEMORY))) == NULL){
+		perror("Erreur malloc!");
+	}
+
+	/*printf("%p\n", memoryData);
+	printf("%p,%d",&memoryData->numPage, memoryData->numPage);*/
+
+	//Assigne la taille d'une page par rapport au système du maître
+	memoryData->sizePage = sysconf(_SC_PAGESIZE);
+	if (memoryData->sizePage == -1) {
+        perror("sysconf/pagesize");
+        exit(1);
+    }
+
+	memoryData->numPage = size/memoryData->sizePage;
+	int modulo = size%memoryData->sizePage;
+
+	//test, page de taille SIZE_PAGE octets
+	for(int i = 0; i <= (size/memoryData->sizePage); i++){
+		if((memoryData->tabPage[i] = (SPAGE *)malloc(sizeof(SPAGE))) == NULL){
+			perror("Erreur malloc!");
+		}
+		memoryData->tabPage[i]->proprietaire = NULL;
+		memoryData->tabPage[i]->pointer = addr+(i*memoryData->sizePage);
+		memoryData->tabPage[i]->numReader = 0;
+		//Initier le surplus, qui ne remplie pas une page en entière
+		if(i == (size/memoryData->sizePage) && modulo != 0){
+			memoryData->numPage += 1;			
+			if((memoryData->tabPage[i+1] = (SPAGE *)malloc(sizeof(SPAGE))) == NULL){
+				perror("Erreur malloc!");
+			}
+			memoryData->tabPage[i+1]->proprietaire = NULL;
+			memoryData->tabPage[i+1]->pointer = addr+((i+1)*memoryData->sizePage);
+			memoryData->tabPage[i]->numReader = 0;
 		}
 	}
-	
-	printf("-%d pages de %d octets\n", memoryData.numPage, SIZE_PAGE);
+	printf("-%d pages de %ld octets\n", memoryData->numPage, memoryData->sizePage);
 
 	printf("-Table info pages\n\n");
 
@@ -84,126 +126,177 @@ void * InitMaster(int size) {
 	return addr;
 }
 
-/* - Ce rappeller des esclave
-- Envoyer une copie au nouveaux esclave
+struct request{
+	int fd;
+	/*Numéro de la rêquete désirer, le nombre déterminera l'action prise par slaveProcess
+		-> 0 : Initialisation d'un nouveau esclave, en vérité ne sert a rien, juste pour tester les requête et réponse
+	*/
+	int numRequest;
+};
+
+//Répond à une requête d'un esclave
+static void *slaveProcess(void * param){
+	//Détache le processus, pas besoin de join plus tard dans le loopMaster
+	pthread_detach(pthread_self());
+
+	struct request * info = param;
+
+	printf("-Traiment d'un esclave(n°thread) : %ld\n",  syscall(SYS_gettid));
+
+	//Switch pour savoir le comportement à prendre
+	switch (info->numRequest){
+	case 0:
+		printf("-Initialisation client, envoie de taille : %ld\n",  syscall(SYS_gettid));
+		char * sent = malloc(sizeof(char) * 8);
+		sprintf(sent, "%ld", sizeof(DATA));
+		send(info->fd, sent, strlen(sent), 0);
+		break;
+	case 1:
+		//Autre requête à compléter
+	default:
+		break;
+	}
+
+	printf("-Fin traitement : %ld\n",  syscall(SYS_gettid));
+	return NULL;
+}
+
+
+/* Boucle du maître:
+- Ce rappeller des esclave
+- Envoyer une copie des pages au esclave
 - Invalidité les copie des esclave quand une nouvelle page est écrite*/
 void LoopMaster() {
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	/*int socketfd, socketClientFD;
+	printf("Début de la boucle Maitre :\n");
+	struct request * param = malloc(sizeof(struct request));
+	int socketfd, socketEsclaveFD;
+	pthread_t th;
+
+	//Verifie si InitMaster à bien été appeler
+	if(memoryData == NULL){
+		perror("Memoire non-initialisé");
+	}
 
 	struct sockaddr_in addrclt;
 	addrclt.sin_family = AF_INET;
-	addrclt.sin_port = htons(PORT);
+	addrclt.sin_port = htons(PORT_MAITRE);
 	addrclt.sin_addr.s_addr = INADDR_ANY;
 
 	struct sockaddr_in addrclt2;
 	socklen_t sz = sizeof(addrclt2);
 
+	//Ouverture du socket
+	if((socketfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+		perror("socket");
+		exit(1);
+	}
+	printf("-Ouverture d'un socket\n");
 
-	int copyOwner[NB_CLIENTS]; 
-	//int lastCopyID = 0;
-	//int forking = 0;
+	//Bind le port au socket
+	if(bind(socketfd, (struct sockaddr*)&addrclt, sizeof(addrclt)) == -1) {
+		perror("bind");
+		exit(2);
+	}
+	printf("-Socket bind\n");
+
+	//Ecoute sur le port
+	if(listen(socketfd, NB_ESCLAVE_MAX) == -1) {
+		perror("listen");
+		exit(3);
+	}
+	printf("-Ecoute sur le port\n\n");
 	
-	//int *currentCountClient = malloc(sizeof(int));
-	//*currentCountClient = 0;
-	//int numClient = 0;
-	//int i = 0;
+	//Boucle principale
+	while(1){
+		//Si une connection arrive et qu'elle est validé mais également que le nombre d'esclave connecter n'est pas au maximun
+		if((socketEsclaveFD = accept(socketfd, (struct sockaddr*)&addrclt2, &sz)) != -1) {
+			char numRequestS[3];
+			recv(socketEsclaveFD, numRequestS, 3,0);
+			param->fd = socketEsclaveFD;
+			param->numRequest = atoi(numRequestS);
+			printf("Nouveau client :\n-Numéro requête esclave : %d\n", param->numRequest);
+			
+			//Thread pour la gestion du nouveau esclave
+			pthread_create(&th, NULL, slaveProcess, (void *)param);	
+		}
+	}	
+	
+	//Unbind
+	shutdown(socketfd, SHUT_RDWR);
+	//Fermeture du socket
+	close(socketfd);
+}
 
+//Libère la mémoire partagé et les méta donné des pages sur le Maître
+void endMaster(void * data, int size){
+	printf("Fin Master:\n");
+	//Libère la mémoire partagé
+	if(munmap(data, size) == -1){
+		perror("Erreur unmmap!");
+	}
+	
+	//Libère la mémoire de chaque structure PAGE dans la struct MEMORY
+	for(int i = 0; i <= memoryData->numPage; i++){
+		free(memoryData->tabPage[i]);
+	}
+
+	//Libère la mémoire que prend la struct MEMORY
+	free(memoryData);
+	printf("- Mémoire libèrer\n\n");
+}
+
+
+
+
+
+
+
+//Thread de demande d'une page de cette esclave à l'esclave qui demande(adresse est le début de la mmap locale)
+//-> A faire : L'arrêter après la fin de l'esclave
+void* slaveLoop(void * adresse){
+	pthread_detach(pthread_self());
+
+	int socketfd, socketEsclaveFD;
+
+	struct sockaddr_in addrclt;
+	addrclt.sin_family = AF_INET;
+	addrclt.sin_port = htons(PORT_ESCLAVE);
+	addrclt.sin_addr.s_addr = INADDR_ANY;
+
+	struct sockaddr_in addrclt2;
+	socklen_t sz = sizeof(addrclt2);
+
+	//Ouverture du socket
 	if((socketfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
 		perror("socket");
 		exit(1);
 	}
 
+	//Bind le port au socket
 	if(bind(socketfd, (struct sockaddr*)&addrclt, sizeof(addrclt)) == -1) {
 		perror("bind");
 		exit(2);
 	}
 
-	if(listen(socketfd, NB_CLIENTS) == -1) {
+	//Ecoute sur le port
+	if(listen(socketfd, NB_ESCLAVE_MAX) == -1) {
 		perror("listen");
 		exit(3);
 	}
 
-	while(i < NB_CLIENTS-1){
-		copyOwner[i] = -1;
-		i++;
-	}
-
-	//Loop principale
+	printf("-Thread esclave vers esclave initialiser\n\n");
 	while(1){
-		Pas vraiment pertinant, a refaire.
-		//Si une connection arrive et qu'elle est valide mais également que le nombre d'esclave connecter n'est pas au maximun
-		printf("Attente esclave\n");
-		if((socketClientFD = accept(socketfd, (struct sockaddr*)&addrclt2, &sz)) != -1 && *currentCountClient != NB_CLIENTS) {
-			
-			
-			printf("Nouveau esclave: %d\n", *currentCountClient+1);
-			//Chercher une place dans le tableau des esclave connecter
-			i = 0;
-			while(i < NB_CLIENTS-1){
-				//Place trouver, ecriture du FD dans l'emplacement, envoie d'une copie, nombre de client augmente
-				if(copyOwner[i] == -1){
-					copyOwner[i] = socketClientFD;
-					numClient = i;
-					send(copyOwner[numClient], (void *)&i, sizeof(int), 0);
-					printf("Copie envoyer\n");
-					*currentCountClient = *currentCountClient+1;
-					break;
-				}	
-				i++;		
-			}
-			
-			//Thread pour la gestion du nouveau client
-			
-
-			pthread_t thread_id;
-    		pthread_create(&thread_id, NULL, slaveProcess, NULL);
-    		pthread_join(thread_id, NULL);
-			
-		}
-	}	
-	
-	shutdown(socketfd, SHUT_RDWR);
-	close(socketfd);*/
-
-
-	// ENVOIE COPIE FICHIER MEMOIRE PARTAGEE
-}
-
-void slaveProcess(int *currentCountClient, int FD){
-	/*char *bufferRequest = malloc(sizeof(char) * 100);
-	bool isRunning = true;
-
-	//Boucle principale du client, reçoit une commande(EX: exit) et fait une action.
-	printf("Boucle esclave : %d\n", *currentCountClient);
-	while(isRunning == true){
-		recv(FD, bufferRequest,sizeof(bufferRequest),0);
-		//printf("receive %s\n", bufferRequest);
-		if(strcmp(bufferRequest,  "exit") == 0){
-			printf("Exit request from : %d\n", FD);
-			isRunning = false;
-			break;
+		if((socketEsclaveFD = accept(socketfd, (struct sockaddr*)&addrclt2, &sz)) != -1) {
+			//Traitement de la demande d'un esclave demandant une page à cette esclave
 		}
 	}
-		
-	//Sortie, fermeture du FD, assigne -1 a l'emplacement et reduit le nombre de client
-	close(FD);
-	*currentCountClient = *currentCountClient-1;
-	return;*/
+	return NULL;
 }
 
-
+//Initialisation de l'esclave
 void* InitSlave(char* HostMaster) {
-	/*int socketfd;
+	printf("Initialisation Esclave:\n");
+	int socketfd;
 
 	if((socketfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
 		perror("socket");
@@ -216,6 +309,7 @@ void* InitSlave(char* HostMaster) {
 		perror("getaddrinfo");
 		exit(2);
 	}
+	printf("-Recherche Maitre\n");
 
 	struct in_addr ipv4 = ((struct sockaddr_in*) res->ai_addr)->sin_addr;
 
@@ -224,47 +318,61 @@ void* InitSlave(char* HostMaster) {
 	struct sockaddr_in addr;
 	memset((void*)&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	addr.sin_port = htons(PORT);
+	addr.sin_port = htons(PORT_MAITRE);
 	addr.sin_addr = ipv4;
-	printf("Connecting?\n");
-	if(connect(socketfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-		perror("connect");
-		exit(3);
+	printf("-Connexion Maitre\n");
+
+	//Tant que pas connecter au maître on réessaye
+	while(connect(socketfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+		perror("Connection échouer");
+		sleep(2);
 	}
-	printf("Connected\n");
-	// LECTURE ET STOCKAGE DANS FICHIER
+	printf("-Connecter\n");
+
+	// Test de demande de rêquete ( 0 : demande de la taille de la mmap)
+	char *sendRequest = "0\0";
+	char recvSize[10];
+
+	send(socketfd, sendRequest, strlen(sendRequest), 0);
+
+	recv(socketfd, recvSize, 10, 0);
+
+	int size = atoi(recvSize);
+	printf("-Taille reçu :%d\n", size);
 
 	int fd;
 
+	//Ouverture de la mémoire partager de taille obtenue précédamment
 	if((fd = shm_open("/memoire", O_CREAT | O_RDWR, 0600)) < 0) {
 		perror("shm_open");
 		exit(1);
 	}
 
-	ftruncate(fd, sizeof(int));
+	ftruncate(fd, size);
 
 	void* adresse;
-	if((adresse = mmap(NULL, sizeof(int), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+	//Aucun droit d'écriture/lecture
+	if((adresse = mmap(NULL, size, PROT_NONE, MAP_SHARED, fd, 0)) == MAP_FAILED) {
 		perror("mmap");
 		exit(2);
 	}
+	printf("-Mémoire partagé locale ouverte\n");
 
-	printf("MMAP opened\n");
+	//Démarrer un thread pour les demande de pages des autres esclaves
+	pthread_t th;
+	pthread_create(&th, NULL, slaveLoop, (void *)adresse);
 
-	//Besoin de demander la taille?? A rajouter
-	int *recvBuff = malloc(sizeof(int));
-
-	recv(socketfd, recvBuff, sizeof(int), 0);
-	printf("Received copy\n");
-	memcpy(adresse, (void *)recvBuff, sizeof(int));
-	printf("Copy placed\n");
-
-	char* message = "exit";
-	//stopper la connection
-	send(socketfd, message, sizeof(message), 0);
+	//A faire : Démarrer un thread qui s'ocupera des défaut de page avec userfaultfd
 	
-	return adresse;*/
+	return adresse;
 }
+
+
+/*Handle des default pages :
+* https://noahdesu.github.io/2016/10/10/userfaultfd-hello-world.html
+*
+*/
+
 
 void lock_read(void* adr, int s) {
 

@@ -7,28 +7,29 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+
 #include "lib.h"
-
-typedef struct{
-	int id;
-	char * data[1024];
-}DATA;
-
 
 int main(int argc, char** argv) {
 
-	//Initialisation mémoire partagée (Test de InitMaitre)
+	//Etape 1 : Initialisation mémoire partagée (Test de InitMaitre) et la remplir de données.
 
 	DATA * memory = (DATA *) InitMaster(sizeof(DATA));
 
 	memory->id = 3;
-	for(int i = 0; i<= 1023; i++){
+	for(int i = 0; i<= 2047; i++){
 		memory->data[i] = "Coucou\0";
 	}
 
-	printf("ID : %d\nDATA 1000 : %s\n", memory->id, memory->data[1000]);
+	printf("ID : %d\nDATA 1500 : %s\n", memory->id, memory->data[1500]);
 
-	munmap(memory, sizeof(DATA));
+	//Etape 2 : LoopMaster, prendre les requête et gérer la mémoire
+
+	LoopMaster();
+
+	//Etape 3 : Finaliser
+	
+	endMaster(memory, sizeof(DATA));
 	return 0;
 }
 
