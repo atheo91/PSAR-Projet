@@ -20,10 +20,27 @@ int main(int argc, char** argv) {
 	//Etape 1 : Initialiser la mémoire avec 0 droit dessus. Lancer le handler de défaut de page(thread 1), et une handler de requête distante(thread 2) 
 	localData =  (DATA *) InitSlave(HostMaster);
 	//Etape 2 : Savoir lire et gérer les défaut de page en lecture
+	lock_read(NULL, 0);
+	int read = localData->id;
+
+
+	char * read2 = malloc(sizeof(char));
+
+	read2 = localData->data[1000];
+	/*for(int i = 0; i<= 2047; i++){
+		localData->data[i] = "Coucou\0";
+	}*/
+	unlock_read(NULL, 0);
 
 	//Etape 3 : Savoir écrire et gérer les défaut de page en lecture
+	/*lock_write(NULL, 0);
+	localData->id = 1;
+	for(int i = 0; i<= 2047; i++){
+		localData->data[i] = "Coucou\0";
+	}
+	unlock_write(NULL, 0);*/
 
 	//Etape 4 : Finaliser
-	munmap(localData, sizeof(DATA));
+	endSlave(localData, sizeof(DATA));
 	return 0;
 }

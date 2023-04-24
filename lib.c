@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <signal.h>
 
 #define PORT_MAITRE 10011
 #define PORT_ESCLAVE 10012
@@ -39,6 +40,7 @@ typedef struct{
 //Donnée d'une page
 typedef struct{
 	int numReader;
+	int numWriter;
 	struct sockaddr * proprietaire;
 	void * pointer;
 }SPAGE;
@@ -48,37 +50,35 @@ typedef struct{
 	int numPage;
 	SPAGE * tabPage[NB_PAGE_MAX];
 }SMEMORY;
+//Paramètre pour le userfaultfd
+struct params {
+    int uffd;
+    long page_size;
+	int nombre_page;
+	void * pointeurZoneMemoire;
+};
 
+//Variable globale maitre
 static SMEMORY * memoryData;
+
+//Variable globale esclave
+static volatile int stopThreads;
+static volatile int writeRights;
+
 
 void * InitMaster(int size) {
 	printf("Initialisation Master:\n");
 	int fd;
-	
-	//Ref: https://www.man7.org/linux/man-pages/man3/shm_open.3.html
-	//Ouvre un "ficher" en mémoire partagé de taille 0.
-	if((fd = shm_open("/memoire", O_CREAT | O_RDWR, 0600)) < 0) {
-		perror("shm_open");
-		exit(1);
-	}
-
-	printf("-Mémoire partagé créée, taille %d octets\n", size);
-
-	//https://www.man7.org/linux/man-pages/man2/ftruncate.2.html
-	//Change la taille de la mémoire partagé.
-	ftruncate(fd, size);
-
-	printf("-Taille modifier\n");
-
 	void* addr;
+
 	//https://www.man7.org/linux/man-pages/man2/mmap.2.html
 	//Virtualize la mémoire partagé.
-	if((addr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+	if((addr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
 		perror("mmap");
 		exit(2);
 	}
 
-	printf("-Virtualization\n");
+	printf("-Mémoire partagé créée, taille %d octets\n", size);
 
 	//Alloue la mémoire partagée
 
@@ -107,6 +107,7 @@ void * InitMaster(int size) {
 		memoryData->tabPage[i]->proprietaire = NULL;
 		memoryData->tabPage[i]->pointer = addr+(i*memoryData->sizePage);
 		memoryData->tabPage[i]->numReader = 0;
+		memoryData->tabPage[i]->numWriter = 0;
 		//Initier le surplus, qui ne remplie pas une page en entière
 		if(i == (size/memoryData->sizePage) && modulo != 0){
 			memoryData->numPage += 1;			
@@ -115,7 +116,8 @@ void * InitMaster(int size) {
 			}
 			memoryData->tabPage[i+1]->proprietaire = NULL;
 			memoryData->tabPage[i+1]->pointer = addr+((i+1)*memoryData->sizePage);
-			memoryData->tabPage[i]->numReader = 0;
+			memoryData->tabPage[i+1]->numReader = 0;
+			memoryData->tabPage[i+1]->numWriter = 0;
 		}
 	}
 	printf("-%d pages de %ld octets\n", memoryData->numPage, memoryData->sizePage);
@@ -151,8 +153,31 @@ static void *slaveProcess(void * param){
 		sprintf(sent, "%ld", sizeof(DATA));
 		send(info->fd, sent, strlen(sent), 0);
 		break;
-	case 1:
-		//Autre requête à compléter
+	case 1: //Lecteur : demande de page
+		printf("-Demande de page (lecture): %ld\n",  syscall(SYS_gettid));
+		//Recevoir le numéro de la page demandée
+		int * numPage = malloc(sizeof(int));
+		recv(info->fd, numPage, sizeof(int),0);
+		printf("-Page numéro %d : %ld\n",  *numPage, syscall(SYS_gettid));
+
+		//Vérifier que aucun écrivain (A déplacer dans la requête lock_read)
+		/*while(memoryData->tabPage[*numPage]->numWriter != 0){
+			sleep(1);
+		}*/
+
+		//Qui est le propriétaire ? Si NULL : maître 
+		memoryData->tabPage[*numPage]->numReader++;
+		if(memoryData->tabPage[*numPage]->proprietaire == NULL){
+			//Dire qu'on envoye la page
+			send(info->fd, (void *)0, sizeof(int), 0);
+			//Envoyer la page entière
+			send(info->fd,memoryData->tabPage[*numPage]->pointer, memoryData->sizePage, 0);
+		}else{
+			//Dire qu'on envoye les info d'un esclave
+			send(info->fd, (void *)1, sizeof(int), 0);
+			//Envoyer le propriétaire
+			send(info->fd,memoryData->tabPage[*numPage]->proprietaire, sizeof(struct sockaddr), 0);
+		}
 	default:
 		break;
 	}
@@ -207,13 +232,15 @@ void LoopMaster() {
 	printf("-Ecoute sur le port\n\n");
 	
 	//Boucle principale
+	//Notes : Ce rappeler des esclaves et leur FD.	
 	while(1){
 		//Si une connection arrive et qu'elle est validé mais également que le nombre d'esclave connecter n'est pas au maximun
 		if((socketEsclaveFD = accept(socketfd, (struct sockaddr*)&addrclt2, &sz)) != -1) {
-			char numRequestS[3];
-			recv(socketEsclaveFD, numRequestS, 3,0);
+			int * numRequest = malloc(sizeof(int));
+			
+			recv(socketEsclaveFD, numRequest, sizeof(int),0);
 			param->fd = socketEsclaveFD;
-			param->numRequest = atoi(numRequestS);
+			param->numRequest = *numRequest;
 			printf("Nouveau client :\n-Numéro requête esclave : %d\n", param->numRequest);
 			
 			//Thread pour la gestion du nouveau esclave
@@ -231,7 +258,7 @@ void LoopMaster() {
 void endMaster(void * data, int size){
 	printf("Fin Master:\n");
 	//Libère la mémoire partagé
-	if(munmap(data, size) == -1){
+	if(munmap(data, size) == -1){		
 		perror("Erreur unmmap!");
 	}
 	
@@ -244,8 +271,6 @@ void endMaster(void * data, int size){
 	free(memoryData);
 	printf("- Mémoire libèrer\n\n");
 }
-
-
 
 
 
@@ -285,18 +310,170 @@ void* slaveLoop(void * adresse){
 	}
 
 	printf("-Thread esclave vers esclave initialiser\n\n");
-	while(1){
+	while(stopThreads ==0){
 		if((socketEsclaveFD = accept(socketfd, (struct sockaddr*)&addrclt2, &sz)) != -1) {
 			//Traitement de la demande d'un esclave demandant une page à cette esclave
+
 		}
 	}
+	return NULL;
+}
+
+static void *handleDefault(void * arg){
+	struct params *p = arg;
+    long page_size = p->page_size;
+    char buf[page_size];
+
+    for (;;) {
+        struct uffd_msg msg;
+
+        //
+        struct pollfd pollfd[1];
+        pollfd[0].fd = p->uffd;
+        pollfd[0].events = POLLIN|POLLOUT;	// les évènements attendus ; POLLIN:
+
+        // wait for a userfaultfd event to occur
+        int pollres = poll(pollfd, 1, 2000);
+
+        if (stopThreads){
+			printf("Stop userfaultfd handle");
+			goto end;
+		}
+            
+
+        switch (pollres) {
+        case -1:
+            perror("poll/userfaultfd");
+            goto end;
+        case 0:
+            continue;
+        case 1:
+            break;
+        default:
+            fprintf(stderr, "unexpected poll result\n");
+            goto end;
+        }
+
+        if (pollfd[0].revents & POLLERR) {
+            fprintf(stderr, "pollerr\n");
+            goto end;
+        }
+
+
+        int readres = read(p->uffd, &msg, sizeof(msg));
+        if (readres == -1) {
+            if (errno == EAGAIN){
+                printf("eagain");
+                continue;
+            }
+            perror("read/userfaultfd");
+            goto end;
+        }
+
+        if (readres != sizeof(msg)) {
+            fprintf(stderr, "invalid msg size\n");
+            goto end;
+        }
+
+        // handle the page fault by copying a page worth of byte
+        printf("Traitement fault\n");
+        if (msg.event & UFFD_EVENT_PAGEFAULT) {
+            long long addr = msg.arg.pagefault.address;
+            
+            // UFFDIO_WRITEPROTECT */
+            if((msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) && !(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP)) {
+                printf("ecriture\n");
+                //Laisser l'utilisateur lire la page
+                struct uffdio_copy copy;
+                copy.src = (long long)buf;
+                copy.dst = (long long)addr;
+                copy.len = page_size;
+                copy.mode = UFFDIO_COPY_MODE_WP;
+
+                //UFFDIO_COPY_MODE_WP
+                if (ioctl(p->uffd, UFFDIO_COPY, &copy) == -1) {
+                    perror("ioctl/copy");
+                    goto end;
+                }
+                /*struct uffdio_writeprotect wp;
+                wp.range.start = addr;
+                wp.range.len = page_size;
+                wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+
+                if(ioctl(p->uffd, UFFDIO_WRITEPROTECT, &wp) == -1){
+                    perror("ioctl(UFFDIO_WRITEPROTECT)");
+                }*/
+            }else if(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP) {
+                printf("proteger\n");   
+                struct uffdio_writeprotect wp;
+                wp.range.start = addr;
+                wp.range.len = page_size;
+                wp.mode = 0;
+
+				sleep(1);
+				if(writeRights == 0){
+					printf("aaaaaaaaaaaaaaaaaaaaaaaaaa\n"); 
+					raise(SIGSEGV);
+				}
+
+                if(ioctl(p->uffd, UFFDIO_WRITEPROTECT, &wp) == -1){
+                    perror("ioctl(UFFDIO_WRITEPROTECT)");
+					goto end;
+                }
+            }else{
+                printf("lecture\n");
+				int offset = addr - (long int)p->pointeurZoneMemoire;
+
+				printf("offset : %d\n", offset);
+
+                //Laisser l'utilisateur lire la page
+                struct uffdio_copy copy;
+                copy.src = (long long)buf;
+                copy.dst = (long long)addr;
+                copy.len = page_size;
+                copy.mode = UFFDIO_COPY_MODE_WP;
+
+                //UFFDIO_COPY_MODE_WP
+                if (ioctl(p->uffd, UFFDIO_COPY, &copy) == -1) {
+                    perror("ioctl/copy");
+                    goto end;
+                }
+                /*struct uffdio_writeprotect wp;
+                wp.range.start = addr;
+                wp.range.len = page_size;
+                wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+
+                if(ioctl(p->uffd, UFFDIO_WRITEPROTECT, &wp) == -1){
+                    perror("ioctl(UFFDIO_WRITEPROTECT)");
+                }*/
+            }
+
+            // Ce bit est toujours accompagné avec le bit UFFD_PAGEFAULT_FLAG_WRITE
+
+            //L'adresse de la page avec un défaut
+            
+
+            //ACTION SUR LA PAGE
+
+           
+            
+        }
+	}
+
+	end:
+	if (ioctl(p->uffd, UFFDIO_UNREGISTER, p->nombre_page * p->page_size)) {
+        fprintf(stderr, "ioctl unregister failure\n");
+    }
 	return NULL;
 }
 
 //Initialisation de l'esclave
 void* InitSlave(char* HostMaster) {
 	printf("Initialisation Esclave:\n");
+	int uffd;					// Descripteur de fichier d'erreur de l'utilisateur
 	int socketfd;
+
+	writeRights = 0;
 
 	if((socketfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
 		perror("socket");
@@ -329,63 +506,139 @@ void* InitSlave(char* HostMaster) {
 	}
 	printf("-Connecter\n");
 
-	// Test de demande de rêquete ( 0 : demande de la taille de la mmap)
-	char *sendRequest = "0\0";
+	// Enregistrer cette esclave aux maitre( 0 : demande de la taille de la mmap)
+	int *sendRequest = malloc(sizeof(int));
 	char recvSize[10];
 
-	send(socketfd, sendRequest, strlen(sendRequest), 0);
+	*sendRequest = 0;
+	send(socketfd, sendRequest, sizeof(int), 0);
 
 	recv(socketfd, recvSize, 10, 0);
 
 	int size = atoi(recvSize);
 	printf("-Taille reçu :%d\n", size);
 
-	int fd;
-
-	//Ouverture de la mémoire partager de taille obtenue précédamment
-	if((fd = shm_open("/memoire", O_CREAT | O_RDWR, 0600)) < 0) {
-		perror("shm_open");
-		exit(1);
-	}
-
-	ftruncate(fd, size);
-
 	void* adresse;
 	//Aucun droit d'écriture/lecture
-	if((adresse = mmap(NULL, size, PROT_NONE, MAP_SHARED, fd, 0)) == MAP_FAILED) {
+	if((adresse = mmap(NULL, size, PROT_WRITE|PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
 		perror("mmap");
 		exit(2);
 	}
 	printf("-Mémoire partagé locale ouverte\n");
 
+	stopThreads = 0;
+
 	//Démarrer un thread pour les demande de pages des autres esclaves
 	pthread_t th;
-	pthread_create(&th, NULL, slaveLoop, (void *)adresse);
+	if(pthread_create(&th, NULL, slaveLoop, (void *)adresse)!= 0) {
+    	perror("pthread1");
+    	exit(1);
+    }
 
-	//A faire : Démarrer un thread qui s'ocupera des défaut de page avec userfaultfd
-	
+
+    /*--------------------------------------------------------------------MISE EN PLACE DE USERFAULTFD-----------------------------------------------------------------*/
+    // Créer et activer l'objet userfaultfd (nouvelle mise en place de userfaultfd)
+    // -> _NR_userfaultfd : numéro de l'appelle système
+    // -> O_CLOEXEC : (FLAG) Permet le multithreading
+    // -> O_NONBLOCK : (FLAG) Ne pas bloquer durant POLL
+    uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+    if (uffd == -1) {
+        perror("syscall/userfaultfd");
+        exit(1);
+    }
+
+    // Activer la version de l'api et vérifier les fonctionnalités
+    struct uffdio_api uffdio_api;
+    uffdio_api.api = UFFD_API;
+
+    //IOCTL : permet de communiquer entre le mode user et kernel. On demande une requête de type UFFDIO_API qui va remplir notre structure uffdio_api
+    if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
+        perror("ioctl/uffdio_api");
+        exit(1);
+    }
+
+    //Vérifier que l'API récupérer est la bonne, que notre système est compatible avec userfaultfd API
+    if (uffdio_api.api != UFFD_API) {
+        fprintf(stderr, "unsupported userfaultfd api (1)\n");
+        exit(1);
+    }else if (!(uffdio_api.features & UFFD_FEATURE_PAGEFAULT_FLAG_WP)) {
+    	fprintf(stderr, "unsupported userfaultfd api (3)\n");
+    	exit(1);
+    }
+
+	int num_page = size / 4096;
+    if(size % 4096 != 0){
+		num_page++;
+	}
+    // Enregistrer la plage de mémoire du mappage que nous venons de créer pour qu'elle soit gérée par l'objet userfaultfd
+    // UFFDIO_REGISTER_MODE_MISSING: l'espace utilisateur reçoit une notification de défaut de page en cas d'accès à une page manquante (les pages qui n'ont pas encore fait l'objet d'une faute)
+    // UFFDIO_REGISTER_MODE_WP: l'espace utilisateur reçoit une notification de défaut de page lorsqu'une page protégée en écriture est écrite. Nécéssaire pour le handle de défaut de page
+    struct uffdio_register uffdio_register;
+    //Début de la zone mémoire (pointeur)
+    uffdio_register.range.start = (unsigned long)adresse;
+    //Sa taille (nombre de page * taille d'une page) si ce n'est pas un multiple de page, UFFDIO_REGISTER ne marchera pas
+    uffdio_register.range.len = num_page * 4096;
+    uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
+
+
+	printf("-Taille couverte par userfaultfd : %lld (nombre de page : %d)\n", uffdio_register.range.len,num_page);
+
+    //Enregistre et setup notre userfaultfd avec la plage donnée (communication avec le noyau)
+    if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+		if(errno == EINVAL)
+			perror("Un problème...");
+		perror("ioctl/uffdio_register");
+		exit(1);
+	}
+
+	//Démarrer un thread pour gérer les défaut de pages
+	struct params p;
+    p.uffd = uffd;
+	p.nombre_page = num_page;
+    p.page_size = 4096;
+	p.pointeurZoneMemoire = adresse;
+
+	pthread_t thhandle;
+	if(pthread_create(&thhandle, NULL, handleDefault, &p) != 0) {
+    	perror("pthread2");
+    	exit(1);
+    }
+	sleep(1);
+
 	return adresse;
 }
 
 
+
 /*Handle des default pages :
-* https://noahdesu.github.io/2016/10/10/userfaultfd-hello-world.html
+* https://nwriteRightsoahdesu.github.io/2016/10/10/userfaultfd-hello-world.html
 *
 */
 
 
 void lock_read(void* adr, int s) {
-
+	
 }
 
 void unlock_read(void* adr, int s) {
-
+	
 }
 
 void lock_write(void* adr, int s) {
-
+	writeRights = 1;
 }
 
 void unlock_write(void* adr, int s) {
+	writeRights = 0;
+}
 
+//Libère la mémoire partagé, dit au maître de devenir propriétaire des pages???
+void endSlave(void * data, int size){
+	printf("Fin Esclave\n");
+	stopThreads = 1;
+
+	//Libère la mémoire partagé
+	if(munmap(data, size) == -1){
+		perror("Erreur unmmap!");
+	}
 }
