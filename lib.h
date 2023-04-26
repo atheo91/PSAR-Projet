@@ -30,11 +30,10 @@
 #include "source_maitre.c"
 
 //Donnée répartie example
-struct DATA{
+struct data{
 	int id;
-	int data[14000];
+	int data[1200];
 };
-
 
 void *InitMaster(int size);
 

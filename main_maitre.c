@@ -5,11 +5,11 @@ int main() {
 
 	//Etape 1 : Initialisation mémoire partagée (Test de InitMaitre) et la remplir de données.
 
-	struct DATA * local_data = (struct DATA *) InitMaster(sizeof(struct DATA));
+	struct data * local_data = (struct data *) InitMaster(sizeof(struct data));
 
 	local_data->id = 3;
 	
-	for(int i = 0; i<= 13999; i++){
+	for(int i = 0; i<= 1199; i++){
 		local_data->data[i] = i;
 	}
 
@@ -19,6 +19,6 @@ int main() {
 
 	//Etape 3 : Finaliser
 	
-	endMaster(local_data, sizeof(struct DATA));
+	endMaster(local_data, sizeof(struct data));
 	return 0;
 }
