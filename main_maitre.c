@@ -7,7 +7,7 @@ int main() {
 
 	struct data * local_data = (struct data *) InitMaster(sizeof(struct data));
 
-	local_data->id = 3;
+	local_data->id = 1234;
 	
 	for(int i = 0; i<= 1199; i++){
 		local_data->data[i] = i;
