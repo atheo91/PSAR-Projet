@@ -1,64 +1,21 @@
-#define NB_PAGE_MAX 1024
-#define PAGE_SIZE 4096
-#define PORT_MAITRE 10078
+/***** LIBRAIRIES *****/
 
-//Possible REQUETE/RETOUR pendant la communication ECLAVE/MAITRE
+#include <sys/syscall.h>
+#include <sys/mman.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-#define REQUETE_INIT 1
-#define REQUETE_DEMANDE_PAGE 2
-#define REQUETE_LOCK_READ 3
-#define REQUETE_UNLOCK_READ 4
-#define REQUETE_LOCK_WRITE 5
-#define REQUETE_UNLOCK_WRITE 6
-#define RETOUR_DEMANDE_PAGE_ENVOIE 7
-#define RETOUR_DEMANDE_PAGE_VERS_ESCLAVE 8
-#define REQUETE_INVALIDE_PAGE 9
-#define ACK				100
-#define REQUETE_FIN 999
-
-//Donnée d'une page et ses information : le propriétaire, le nombre d'écrivain et de lecteur. ainsi qu'un pointeur vers le début de la page
-struct page{
-	void * pointer;
-	int nombre_reader;					// nombre de lecteurs sur cette page
-	struct lecteur* lecteurs_actuels;	// liste des lecteurs actuellement en train de lire sur cette page
-	struct lecteur* lecteurs_cache;		// liste des lecteurs depuis la dernière écriture sur cette page
-	struct esclave* ecrivain;			// écrivain	sur cette page actuellement
-	struct esclave* ancient_ecrivain;   // précendant écrivaint, le propriétaire
-};
-
-// Liste des esclaves
-struct liste_esclaves {
-	struct esclave* esclave;
-	struct liste_esclaves* suivant;
-};
-
-// Liste chaînée représentant des lecteurs
-struct lecteur {
-	struct esclave* esclave;	// esclave concerné
-	struct lecteur* suivant;	// accéder aux autres lecteurs
-};
-
-//Information sur les esclaves, actuellement connectée, leur FD, et la structure de donnée (IP,port, etc...).
-struct esclave{
-	int fd;
-	struct sockaddr_in info;
-};
-
-//Donnée de la mémoire partagée, contient des structures page, structures esclave, un mutex, et le nombre de page 
-struct SMEMORY{
-	int nombre_page;
-	int nombre_esclaves_actuel;
-    int size;
-	pthread_mutex_t mutex_maitre;
-	struct liste_esclaves * list_esclaves;
-	struct page * tab_page[NB_PAGE_MAX];
-};
+#include "lib.h"
 
 
+/***** VARIABLES GLOBALES *****/
 
 static struct SMEMORY * memory_data; //Mémoire contenant toutes les méta-données de nos page et esclaves
 pthread_cond_t cond_lecteurs 	= PTHREAD_COND_INITIALIZER;
 pthread_cond_t cond_ecrivains 	= PTHREAD_COND_INITIALIZER;
+
 
 /***** FONCTIONS *****/
 
@@ -283,12 +240,12 @@ void invalider_page(struct page* page, int numero) {
 	struct lecteur* lecteur = page->lecteurs_cache;
 	struct message message;
 	int socket_esclave = 0;
-	message.type = REQUETE_INVALIDE_PAGE;
-	message.debut_page = numero;
 
 	printf("- Invalidation des pages\n");
 
 	while(lecteur != NULL) {
+		message.type = REQUETE_INVALIDE_PAGE;
+		message.debut_page = numero;
 		//Ouverture d'un socket TCP
 		if(lecteur->esclave != page->ancient_ecrivain){
 			if((socket_esclave = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
@@ -302,6 +259,8 @@ void invalider_page(struct page* page, int numero) {
 				perror("Connection échouer");
 				sleep(2);
 			}
+
+
 
 			printf("Envoie page\n");
 			if(send(socket_esclave, &message, sizeof(struct message), 0) == -1) {
@@ -321,6 +280,7 @@ void invalider_page(struct page* page, int numero) {
 			}
 
 			shutdown(socket_esclave, SHUT_RDWR);
+			close(socket_esclave);
 		}
 
 		lecteur = lecteur->suivant;
@@ -346,15 +306,22 @@ void do_lock_read(struct message message, struct esclave* esclave) {
 		}
 	}
 
+	//Dire qu'il n'est plus en attente
+	requete.type = ACK;
+	if(send(esclave->fd, &requete, sizeof(struct message), 0) == -1) {
+		perror("write");
+		exit(1);
+	}
+
 	//
 	printf("- M%d peux accéder à(aux) page(s) !\n", esclave->fd);
 	//
 
 	for(int i=message.debut_page ; i<=message.fin_page ; i++) {
-		printf("Recherche dans le cache\n");
+		printf("- Recherche dans le cache\n");
 		dans_cache = est_dans_cache(esclave, memory_data->tab_page[i]);
 		// Envoyer la page
-		printf("Dans cache ? %d\n esclave : %d\n ecrivain null? %d\n", dans_cache, esclave->fd, (memory_data->tab_page[i]->ecrivain == NULL));
+		printf("(Debug : Dans cache ? %d/Esclave : %d/Ecrivain null? %d)\n", dans_cache, esclave->fd, (memory_data->tab_page[i]->ecrivain == NULL));
 		if(dans_cache == 0 && esclave != memory_data->tab_page[i]->ecrivain){
 			if(memory_data->tab_page[i]->ancient_ecrivain == NULL){
 				printf("- Envoie de page numéro : %d!\n", i);
@@ -365,13 +332,14 @@ void do_lock_read(struct message message, struct esclave* esclave) {
 					exit(1);
 				}
 
+				printf("- Envoie de page n°%d\n", i);
 				if(send(esclave->fd, memory_data->tab_page[i]->pointer, PAGE_SIZE, 0) == -1) {
 					perror("write");
 					exit(1);
 				}
 				
 			}else{
-				printf("- Redirection vers esclave : %d!\n", i);
+				printf("- Redirection vers esclave (Page : %d, Esclave : %d)!\n", i, memory_data->tab_page[i]->ancient_ecrivain->fd);
 				requete.type = RETOUR_DEMANDE_PAGE_VERS_ESCLAVE;
 				requete.esclave_info = memory_data->tab_page[i]->ancient_ecrivain->info; 
 				
@@ -381,17 +349,19 @@ void do_lock_read(struct message message, struct esclave* esclave) {
 					exit(1);
 				}
 
+				printf("- Attente de ACK\n");
 				if(recv(esclave->fd, &requete, sizeof(struct message), 0) == -1) {
 					perror("write");
 					exit(1);
 				}
 
 				if(requete.type != ACK){
-					perror("communication");
+					printf("Erreur de sync (type : %d)\n", requete.type);
+					exit(1);
 				}
 			}
 		}else{
-			printf("Est dans le cache, pas besoin d'envoyer\n");
+			printf("- Est dans le cache, pas besoin d'envoyer\n");
 		}
 		
 		
@@ -462,10 +432,17 @@ void do_lock_write(struct message message, struct esclave* esclave) {
 		}
 	}
 
+	//Dire qu'il n'est plus en attente
+	requete.type = ACK;
+	if(send(esclave->fd, &requete, sizeof(struct message), 0) == -1) {
+		perror("write");
+		exit(1);
+	}
+
 	//
 	printf("- M%d peux accéder à(aux) page(s) !\n", esclave->fd);
 	//
-
+	
 	for(int i=message.debut_page ; i<=message.fin_page ; i++) {
 		memory_data->tab_page[i]->ecrivain = esclave;
 		//
@@ -624,12 +601,8 @@ static void *slaveProcess(void * param){
 	
 	struct esclave esclave_actuel = *((struct esclave *)param); //Descripteur pour la communication de un esclave, et ses info
 	int esclave_end = 0; // Valeur qui signal la fin de la communication
-	int requete; //Requete faite / envoyer a l'esclave
-	int numero_page; //Numéro de la page demandée(REQUETE_DEMANDE_PAGE)
 	int nombre_de_page; // Nombre de page que l'esclave doit rendre (REQUETE_FIN)
-	struct liste_esclaves * tempEsclave; // 1: Structure temporaire pour désenregister un esclave de le liste (REQUETE_FIN)
 	struct message msg;
-	int pages_modif[memory_data->nombre_page];
 
 	//Verifie si InitMaster à bien été appeler
 	if(memory_data == NULL){
@@ -650,10 +623,11 @@ static void *slaveProcess(void * param){
 		switch (msg.type){
 		//L'esclave veut s"enregistrer, rentrer dans la liste des esclave, on lui renvoie la taille de la zone mémoire en retour
 		case REQUETE_INIT:
-			pthread_mutex_lock(&memory_data->mutex_maitre);
+			//pthread_mutex_lock(&memory_data->mutex_maitre);
 			printf("[fd : %d]Initialisation client, envoie de taille\n", esclave_actuel.fd);
 			esclave_actuel.info.sin_port = msg.port;
 			printf("- Port d'écoute de l'esclave : %d\n", msg.port);
+			
 			ajouter_esclave(esclave_actuel.fd, esclave_actuel.info);
 			
 			//Envoie de la taille
@@ -661,8 +635,7 @@ static void *slaveProcess(void * param){
 				perror("Problème communication 2");
                 esclave_end = 1;
 			}
-			pthread_mutex_unlock(&memory_data->mutex_maitre);
-
+			//pthread_mutex_unlock(&memory_data->mutex_maitre);
 			break;
 		//L'esclave demande une page car il est dans un défaut de page, et il la nécéssite (ceci assume qu'il à deja les droits, sinon il aurais fait un SEGFAULT avant)
 		case REQUETE_DEMANDE_PAGE: 
@@ -809,7 +782,15 @@ static void *slaveProcess(void * param){
 	}
 	printf("[fd : %d]Fin traitement\n", esclave_actuel.fd);
 	//Ferme la connexion
-	shutdown(esclave_actuel.fd, SHUT_RDWR);
+	//Fermeture du socket
+	if(shutdown(esclave_actuel.fd, SHUT_RDWR) == -1){
+		perror("shutdown");
+	}
+				
+	if(close(esclave_actuel.fd)){
+		perror("shutdown");
+		exit(1);
+	}
 	return NULL;
 }
 
@@ -873,7 +854,14 @@ void LoopMaster() {
 	}	
 	
 	//Fermeture du socket
-	shutdown(socketEcoutefd, SHUT_RDWR);
+	if(shutdown(socketEcoutefd, SHUT_RDWR) == -1){
+		perror("shutdown");
+	}
+				
+	if(close(socketEcoutefd)){
+		perror("shutdown");
+		exit(1);
+	}
 }
 
 //Libère la mémoire partagé et les méta donné des pages sur le Maître
