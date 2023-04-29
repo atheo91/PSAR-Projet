@@ -27,343 +27,435 @@ static pthread_t pth_userfaultfd; 		// Thread qui gère les défauts de page (us
 static int maitre_fd;					// Descripteur de fichier du maître
 void *region;							// Début de la région gérée par userfaultfd
 
+/**
+ * Renvoie les droits de l'esclave et la validité de la
+ * version qu'a actuellement l'esclave de la page donnée
+ */
 struct memoire_pages * trouver_mem_page(int numero){
 	struct memoire_pages * temp_memoire = memoire;
-	//printf("numero page dans %d\n", numero);
 	for(int i = 0; i != numero; i++){
-		//printf("passage\n");
 		temp_memoire = temp_memoire->next;
 	}
 	return temp_memoire;
 }
 
-//Thread de communication esclave/esclave, permet d'envoyer les page qu'il est propriétaire (prend l'adresse de la mémoire partagée en paramètre)
+/**
+ * Thread de communication entre esclaves petmettant
+ * d'envoyer les pages dont il est propriétaire aux
+ * esclaves demandeurs
+ */
 void* LoopSlave(void * port){
-	pthread_detach(pthread_self()); //Détache le thread, pour qu'il se finise après avoir atteint sa fin. (doit être fait en premier)
-	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL); //Permet l'arrêt du thread à n'import qu'elle point de stop
+	// Détache le thread afin qu'il puisse se terminer
+	pthread_detach(pthread_self());
+	// Permet l'arrêt du thread à n'importe quel point de stop
+	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
-	struct message msg; //Message reçu : maitre dissant l'invadibilité ou l'esclave demande une page
-	int ecoute_FD, esclave_FD;	//Socket d'écoute et socket pour communiquer avec l'esclave accepter. Aussi le numéro de la page demandé par l'esclave
-	void * addr_page; //Pointeur vers la page demandée par l'esclave, pour pouvoir l'envoyer
+	struct message msg;						// Message reçu : maitre disant l'invadibilité ou l'esclave demande une page
+	int ecoute_FD, esclave_FD;				// Sockets d'écoute et de communication avec l'esclave accepté
+	void* addr_page; 						// Pointeur vers la page demandée par l'esclave, pour pouvoir l'envoyer
+	struct memoire_pages * temp_memoire;	// Droits d'accès aux pages
 
-	struct sockaddr_in addrclt; //Structure pour démarrer un socket d'écoute.
-	struct memoire_pages * temp_memoire;
-	addrclt.sin_family = AF_INET; //-> IPv4.
-	addrclt.sin_port = *((int *)port); //-> Port alléatoire, entre 1024 et 5000.
-	addrclt.sin_addr.s_addr = INADDR_ANY; //-> Accepte toutes les adresse.
+	struct sockaddr_in addrclt; 			// Structure pour démarrer un socket d'écoute
+	addrclt.sin_family = AF_INET; 			// IPv4
+	addrclt.sin_port = *((int *)port); 		// Port aléatoire entre 1024 et 5000
+	addrclt.sin_addr.s_addr = INADDR_ANY; 	// Accepter toutes les adresses
 
-	//Ouverture du socket en TCP
+	// Ouverture du socket en TCP
 	if((ecoute_FD = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-		perror("socket");
+		perror("[ERROR][LoopSlave] socket");
 		exit(1);
 	}
 
-	//Lier le port au socket d'écoute, avec les paramètre de la structure que l'on a définie avant.
+	// Lier le port au socket d'écoute, avec les paramètres de la structure que l'on a définie avant
 	if(bind(ecoute_FD, (struct sockaddr*)&addrclt, sizeof(addrclt)) == -1) {
-		perror("bind");
+		perror("[ERROR][LoopSlave] bind");
 		exit(2);
 	}
 
-	//Commencer à écouter sur le port.
+	// Commencer à écouter sur le port
 	if(listen(ecoute_FD, 10) == -1) {
-		perror("listen");
+		perror("[ERROR][LoopSlave] listen");
 		exit(3);
 	}
 
-	//Boucle d'attende d'eclave pour leur passer la page demandée
-	printf("-Thread esclave vers esclave initialiser\n\n");
-	while(1){
+	// Boucle d'attende d'eclaves pour leur donner la page demandée
+	while(1) {
 		if((esclave_FD = accept(ecoute_FD, NULL, 0)) != -1) {
-			printf("Connexion depuis l'exterieur\n");
-			//Reçois le numéro de la page demandé par l'esclave
+			// Recevoir le numéro de la page demandée par l'esclave
 			msg.type = -1;
-			//Attende de la reception d'une rêquete
-			if(recv(esclave_FD, &msg, sizeof(struct message),0)== -1){
-				perror("Problème communication 1");
+			// Attendre la réception d'un message
+			if(recv(esclave_FD, &msg, sizeof(struct message), 0) == -1){
+				perror("[ERROR][LoopSlave] recv (1)");
 			}
 
+			// Effectuer une action en fonction du type de message reçu
 			switch (msg.type){
+
+			// Les pages qu'on possède ont été invalidées par un autre esclave
 			case REQUETE_INVALIDE_PAGE:
-				printf("INVALIDATION DE LA PAGE %d\n", msg.debut_page);
-				//pthread_mutex_lock(&mutex_esclave);//Lock le mutex pour pas que le programme principale change des droits/modifie pendant que l'on traite cette requête
+				for(int i=0 ; i<msg.fin_page ; i++) {
+					printf("[INVAL] Demande d'invalidition d'une page: P%d invalidée par M%d\n", i, esclave_FD);
+				}
+
 				temp_memoire = trouver_mem_page(msg.debut_page);
 				temp_memoire->validite = 0;
 
+				// Message d'acquittement à envoyer
 				msg.type = ACK;
 				if(send(esclave_FD, &msg, sizeof(struct message), 0) == -1) {
-					perror("send");
+					perror("[ERROR][LoopSlave] send (1)");
 					exit(1);
 				}
-				
-				printf("ACK SENT\n");
 
+				// Fermer la connexion
 				if(shutdown(esclave_FD, SHUT_RDWR) == -1){
-					perror("shutdown");
+					perror("[ERROR][LoopSlave] shutdown (1)");
 					exit(1);
 				}		
 
 				if(close(esclave_FD) == -1){
-					perror("shutdown");
+					perror("[ERROR][LoopSlave] close (1)");
 					exit(1);
 				}
-
-				printf("FIN\n");
-
-				//pthread_mutex_unlock(&mutex_esclave);
 				break;
+
+			// Un esclave nous demande nos pages
 			case REQUETE_DEMANDE_PAGE:
-				printf("DEMANDE DE LA PAGE %d\n", msg.debut_page);
-				//L'adresse de la page demandé est l'adresse de la zone mémoire + le nombre de page * la taille d'une page
-				//pthread_mutex_lock(&mutex_esclave);//Lock le mutex pour pas que le programme principale change des droits/modifie pendant que l'on traite cette requête
+				for(int i=0 ; i<msg.debut_page ; i++) {
+					printf("[ENVOI] Demande de récupération d'une page: envoi de P%d à M%d\n", i, esclave_FD);
+				}
+
+				// Adresse de la page demandée
 				addr_page =  region + (msg.debut_page * PAGE_SIZE);
 
-				//Est-ce que le droit d'écriture est présent? Par jusqu'a être sur la donne entrée des info que l'on à.
 				temp_memoire = trouver_mem_page(msg.debut_page);
 
-				//On vérifie dans notre mémoire info les droit, si on a pas les droit, on les met temporairement (éviter les défaut de page)
-				if(temp_memoire->droit_read == 0){
+				// Vérifier le droit de lecture sur la page, si on n'a pas ce droit, on le met temporairement afin d'éviter les défauts de page
+				if(temp_memoire->droit_read == 0) {
 					if(mprotect(addr_page, PAGE_SIZE, PROT_READ) != 0){
-						perror("mprotect 1");
+						perror("[ERROR][LoopSlave] mprotect (1)");
+						exit(1);
 					}
 				}
 			
-				//Envoie la page demandée
+				// Envoi la page demandée à l'esclave demandeur
 				if(send(esclave_FD, addr_page, PAGE_SIZE, 0)== -1){
-					perror("Problème communication 2");
+					perror("[ERROR][LoopSlave] send (2)");
+					exit(1);
 				}
 			
+				// Retirer les droits s'il ne les possédait pas auparavant
 				if(temp_memoire->droit_read == 0){
 					if(mprotect(addr_page, PAGE_SIZE, PROT_NONE)!= 0){
-						perror("mprotect 2");
+						perror("[ERROR][LoopSlave] mprotect (2)");
+						exit(1);
 					}
 				}
 
+				// Fermeture de la connexion
 				if(shutdown(esclave_FD, SHUT_RDWR) == -1){
-					perror("shutdown");
+					perror("[ERROR][LoopSlave] shutdown (2)");
 					exit(1);
 				}		
 
 				if(close(esclave_FD) == -1){
-					perror("shutdown");
+					perror("[ERROR][LoopSlave] close (2)");
 					exit(1);
 				}
-
-				printf("FIN\n");
-
-				//pthread_mutex_unlock(&mutex_esclave);
 				break;
+
 			default:
-				printf("Message fauté : %d\n", msg.type);
+				printf("[ERROR] Réception d'un message erroné ! (n°%d)\n", msg.type);
 				break;
 			}
 		}
 	}
-	//Ferme la reception d'autre envoie
+
+	// Fermeture de la connexion
 	if(shutdown(ecoute_FD, SHUT_RDWR) == -1){
-		perror("shutdown");
+		perror("[ERROR][LoopSlave] shutdown (3)");
 		exit(1);
 	}		
 	
 	if(close(ecoute_FD)){
-		perror("shutdown");
+		perror("[ERROR][LoopSlave] close (3)");
 		exit(1);
 	}
 
-	printf("-Fin esclave vers esclave\n");
+	free(port);
+
 	return NULL;
 }
 
-//Gére les défaut de page de l'esclave -> À vérifier
-static void *handle_defaut(void * arg){
-	pthread_detach(pthread_self()); //Détache le thread, pour qu'il se finise après avoir atteint sa fin. (doit être fait en premier)
-	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL); //Permet l'arrêt du thread à n'import qu'elle point de stop
+/**
+ * Gère les défauts de page de l'esclave
+ */
+static void* handle_defaut(void* arg){
+	// Détache le thread afin qu'il puisse se terminer
+	pthread_detach(pthread_self());
+	// Permet l'arrêt du thread à n'importe quel point de stop
+	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
-	struct handle_params p = *((struct handle_params *)arg); // Les argument passer en paramètre
-	struct uffd_msg msg;	// Structure message de défaut de page, contient où et pourquoi
-	struct pollfd pollfd;	// Structure de poll, qui est en faite le descripteur vers l'objet  userfaultfd que l'on à ouvert plus tôt
-	int pollres; 			// Valeur pour vérifier le résultat du poll
-	int msgres; 			// Valeur pour vérifier le résultat du message
-	unsigned long addr_fault; // Adresse au début de la page où une faute à été commisse
+	struct handle_params p;			// Récupérer en forme de structures les arguments donnés en paramètre au thread
+	struct uffd_msg msg;			// Structure message de défaut de page, contient où se trouve le défaut de page et comment il a été provoqué
+	struct pollfd pollfd;			// Structure de poll, qui est le descripteur vers l'objet  userfaultfd que l'on a ouvert plus tôt
+	int pollres; 					// Valeur pour vérifier le résultat du poll
+	int msgres; 					// Valeur pour vérifier le résultat du message
+	unsigned long addr_fault; 		// Adresse au début de la page où une faute à été commise
+	struct uffdio_zeropage zero; 	// Structure permettant le remplacement de la page
 
-	struct uffdio_zeropage zero; // Structure permettant de remplacer la page
-
+	p = *((struct handle_params *)arg);
 
 	pollfd.fd = p.uffd;
-    pollfd.events = POLLIN|POLLOUT;	// les évènements attendus ; POLLIN et POLLOUT
+    pollfd.events = POLLIN|POLLOUT;	// les évènements attendus sont POLLIN et POLLOUT
 
     while(1) {
-        // Attendre un événement userfaultfd(check toutes les 2 secondes)
+        // Attendre un événement userfaultfd (vérification toutes les 2 secondes)
         pollres = poll(&pollfd, 1, 2000);
         
-		//Examination de l'événement demandé
+		// Examination de l'évènement demandé
         switch (pollres) {
-		//-1 est une erreur
         case -1:
-            perror("Erreur sur le poll\n");
+            perror("[ERROR][handle_defaut] poll (1)");
             goto end;
         case 0:
             continue;
         case 1:
             break;
-		//Cas questionnable.
+		// Cas questionnable
         default:
-            perror("Evenement inattendu(résultat poll)\n");
+        	perror("[ERROR][handle_defaut] poll (2)");
             goto end;
         }
 
-		//Si l'événement à deja POLLERR dans le retour
+		// Si l'événement a une erreur dans le retour
         if (pollfd.revents & POLLERR) {
-            perror("Erreur poll sur l'événement donnée\n");
+        	perror("[ERROR][handle_defaut] poll (3)");
             goto end;
         }
 
-		//Après avoir confirmé que un événement est bien en cours, on lit le message userfaultfd pour savoir lequel c'est.
-		//Vérifie pour erreur de lecture
+		// Après avoir confirmé qu'un événement est bien en cours, on lit le message les informations sur le défaut de page
         if ((msgres = read(p.uffd, &msg, sizeof(msg))) == -1) {
-            perror("Erreur sur la lecture du message\n");
+        	perror("[ERROR][handle_defaut] read (1)");
             goto end;
         }
 
-		//Si le résultat n'est pas de la taille d'un message normale, il y a un problème
+		// Si le résultat n'est pas de la taille du message
         if (msgres != sizeof(msg)) {
-            perror("Taille du message non-conforme\n");
+        	perror("[ERROR][handle_defaut] Taille du message non-conforme");
             goto end;
         }
 
-        // Traitement des faute avec le type d'événement écrit dans le message -> seulement si l'evenement est un défaut de page(pas de UFFD_EVENT_FORK, UFFD_EVENT_REMAP, UFFD_EVENT_UNMAP)
-        printf("Traitement de la faute de page:\n");
-
+        // Traitement des défauts de page avec le type d'événement écrit dans le message
         if (msg.event & UFFD_EVENT_PAGEFAULT) {
-			//Adresse de la page où la faute c'est produite
+			// Adresse de la page où la faute s'est produite
             addr_fault = msg.arg.pagefault.address;
             
             // Défaut d'écriture/lecture mais pas parce qu'il est protégé, juste car il manque la page
-            if(((msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) && !(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP)) || (!(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) && !(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP))) {
-                //Laisser l'utilisateur lire la page
-				printf("- Pointeur début zone mémoire : %p\n- Pointeur page à régler : %p\n",p.pointeurZoneMemoire, (void *)addr_fault);
+            if(((msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) && !(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP))
+            		|| (!(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) && !(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP))) {
 
-				//Met en place la structure pour remplir la page de 0, réglant le problème
+				// Mettre en place la structure pour remplir la page de 0, réglant le problème
                 zero.range.len = PAGE_SIZE;
 				zero.range.start = addr_fault;
 				zero.mode = 0;  
 
-				//Appel aux système pour remplacer cette page
+				// Appel aux systèmes pour remplacer cette page
                 if (ioctl(p.uffd, UFFDIO_ZEROPAGE, &zero) == -1) {
-                    perror("Erreur durant la copie de la page\n");
+                	perror("[ERROR][handle_defaut] ioctl");
                     goto end;
                 }
 
-				//Erreur si le retour "copy" n'est pas égale à length
+				// Erreur si la zone copiée n'est pas conforme
 				if(zero.zeropage != PAGE_SIZE){
-					perror("Taille copier pas normale\n");
+					perror("[ERROR][handle_defaut] Taille de la zone copiée non-conforme");
 					goto end;
 				}
 
-				printf("- Défaut de page résolue\n");
-			}//Sinon c'est une défaut de protection, pas gérer, cas inattendu.
+				printf("[INFOS] Défaut de page résolu !\n");
+			}
+            // Si c'est une défaut de protection, cas inattendu
 			else {
-                printf("- Page protégée : Pas gérer.\n");  
-				//Erreur de segmentation
+				printf("[ERROR] Page protégée !\n");
+				// Erreur de segmentation
                 raise(SIGSEGV);
 			}
         }
 	}
 
 	end:
-	//Désenregistrer la mémoire à surveiller
+	// Désenregistrer la mémoire à surveiller
 	if (ioctl(p.uffd, UFFDIO_UNREGISTER, PAGE_SIZE * p.nombre_page)) {
-        perror("Erreur pendant le désenregistrement du userfaultfd\n");
+        perror("[ERROR][handle_defaut] ioctl (2)");
+        exit(1);
     }
+
+	free(arg);
+
 	return NULL;
 }
 
-//Initialisation de l'esclave, créer le connexion et s'enregistre au maître, met en place le userfaultfd pour les fautes de pages, et l'écoute sur un port les autres esclaves. 
-void* InitSlave(char* HostMaster) {
-	int uffd;					// File descriptor pour l'object userfaultfd
-	int connexion_FD;			// File descriptor de communication avec le maître (socket)
-	int num_page;				// Nombre de pages allouée
-	int port;					// Port écoute de l'esclave
-	struct memoire_pages * temp_memoire; //Structure temporaire pour la création de la mémoire des pages
-	struct addrinfo* res;		// Structure des info réseaux du maître récupérer
+/**
+ * Etablir une connexion avec le maître
+ */
+void set_connection(char* HostMaster, int* port, long* taille_recv) {
+	printf("[~] Tentative de connexion avec le maître\n");
+
+	struct message req; 		// Message de connexion avec le maître
+	struct addrinfo* res;		// Structure des infos réseau du maître récupérés
 	struct in_addr ipv4;		// Structure IP du maître
 	struct sockaddr_in addr; 	// Structure pour commencer la communication avec le maître
-	unsigned long taille_recv;	// Taille de la mémoire partagée, reçu par le maître
-	struct uffdio_api uffdio_api; //Structure de l'API de userfaultfd, vérifier la compabilité système
-	struct uffdio_register uffdio_register; //Structure pour enregistrer la mémoire surveiller par userfaultfd
-	struct handle_params handle_params;	// Paramètre à donner au thread de userfaultfd
-	struct message req; //Initialisation de la connexion maître
-	void * adresse; //Adresse du début de la zone mémoire
 
-	printf("Initialisation Esclave:\n");
-	/*----------------------------------MISE EN PLACE DE LA CONNECTION AU MAITRE--------------------------------------*/
-	//Ouverture d'un socket TCP
-	if((connexion_FD = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-		perror("Problème d'initialisation du socket\n");
+	// Ouverture d'un socket TCP
+	if((maitre_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+		perror("[ERROR][set_connection] socket");
 		exit(1);
 	}
 
-	printf("-Recherche Maitre\n");
-	//Recherche de l'adresse IP du maître grâce à son nom.
+	// Recherche de l'adresse IP du maître grâce à son nom
 	if(getaddrinfo(HostMaster, NULL, NULL, &res) != 0) {
-		perror("Maître pas trouver!\n");
+		perror("[ERROR][set_connection] getaddrinfo");
 		exit(2);
 	}
 
-	//On prend juste l'adresse IP, c'est tout ce qu'on à besoin
+	// Récupérer l'adresse IP
 	ipv4 = ((struct sockaddr_in*) res->ai_addr)->sin_addr;
 
-	//On libère les info, elles ne sont plus nécéssaire
+	// Libèrer les infos
 	freeaddrinfo(res);
 
-	printf("-Connexion Maitre\n");
-	//Mettre en place la structure pour communiquer avec le maître, on a deja un port prédéfinie
+	// Mettre en place la structure pour communiquer avec le maître
 	memset((void*)&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(PORT_MAITRE);
 	addr.sin_addr = ipv4;
 
-	//On lance la connexion et tant que le maître ne répond pas, on attends.
-	while(connect(connexion_FD, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-		perror("Connexion échouer\n");
+	// Lancement de la connexion: tant que le maître ne répond pas, attendre...
+	while(connect(maitre_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+		printf("[~] En attente de connexion avec le maître...\n");
 		sleep(2);
 	}
 
-	// Enregistrer cette esclave au maitre et nous renvoie la taille de la mémoire partagée
+	// Enregistrer cet esclave au maitre et nous renvoie la taille de la mémoire partagée
 	srand(time(NULL));
-	port = 1024 + rand() % (5000 + 1 - 1024);
+	*port = 1024 + rand() % (5000 + 1 - 1024);
 	req.type = REQUETE_INIT;
-	req.port = port;
+	req.port = *port;
 
-	if(send(connexion_FD, &req, sizeof(struct message), 0)== -1){
-		perror("Problème communication 1\n");
-	}
-	if(recv(connexion_FD, &taille_recv, sizeof(long), 0) == -1){
-		perror("Problème communication 2\n");
+	if(send(maitre_fd, &req, sizeof(struct message), 0)== -1){
+		perror("[ERROR][set_connection] send (1)");
+		exit(1);
 	}
 
-	printf("-Taille reçu :%ld\n", taille_recv);
+	// Réception de la taille de la mémoire partagée
+	if(recv(maitre_fd, taille_recv, sizeof(long), 0) == -1){
+		perror("[ERROR][set_connection] send (2)");
+		exit(1);
+	}
 
-	/*----------------------------------MISE EN PLACE DE LA MÉMOIRE PARTAGER LOCALE--------------------------------------*/
-	//Nouvelle zone mémoire de taille reçu par le maître avec aucun droit d'écriture/lecture, pour sa gestion.
-	printf("-Ouverture mémoire partagé locale\n");
-	if((adresse = mmap(NULL, taille_recv, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
-		perror("Problème initialisation de la mémoire");
+	printf("[OK] Connexion établie avec le maître\n");
+}
+
+/**
+ * Mise en place du gestionnaire de défauts de page
+ */
+void set_userfaultfd(int num_page) {
+	printf("[~] Tentative de mise en place du userfaultfd\n");
+
+	int uffd;								// Descripteur de fichier pour l'objet userfaultfd
+	struct uffdio_api uffdio_api; 			// Structure de l'API de userfaultfd, vérifier la compabilité système
+	struct uffdio_register uffdio_register;	// Structure pour enregistrer la mémoire surveillée par userfaultfd
+	struct handle_params* handle_params;	// Paramètre à donner au thread de userfaultfd
+
+	handle_params = malloc(sizeof(struct handle_params));
+
+	// Créer et activer l'objet userfaultfd (nouvelle mise en place de userfaultfd)
+	// _NR_userfaultfd 	: Numéro de l'appel système
+	// O_CLOEXEC 		: Flag permettant le multithreading
+	// O_NONBLOCK 		: Flag permettant de ne pas bloquer durant POLL
+	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+	if (uffd == -1) {
+		perror("[ERROR][set_userfaultfd] syscall");
+		exit(1);
+	}
+
+	// Activer la version de l'api et vérifier les fonctionnalitées
+	uffdio_api.api = UFFD_API;
+	uffdio_api.features = 0;
+
+	// IOCTL: permet la communication entre le 'mode user' et 'kernel'
+	// On demande une requête de type UFFDIO_API qui va remplir notre structure uffdio_api
+	if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
+		perror("[ERROR][set_userfaultfd] ioctl/uffdio_api");
+		exit(1);
+	}
+
+	// Vérifier que l'API récupérée est supportée par notre système et est compatible avec userfaultfd API
+	if (uffdio_api.api != UFFD_API) {
+		fprintf(stderr, "[ERROR][set_userfaultfd] unsupported userfaultfd api (1)\n");
+		exit(1);
+	}
+
+	// Enregistrer la plage de mémoire du mappage que nous venons de créer pour qu'elle soit gérée par l'objet userfaultfd
+	// UFFDIO_REGISTER_MODE_MISSING: l'espace utilisateur reçoit une notification de défaut de page en cas d'accès à une page manquante (les pages qui n'ont pas encore fait l'objet d'une faute)
+	// UFFDIO_REGISTER_MODE_WP: l'espace utilisateur reçoit une notification de défaut de page lorsqu'une page protégée en écriture est écrite. Nécéssaire pour le handle de défaut de page
+	uffdio_register.range.start = (unsigned long)region;	// Début de la zone mémoire
+	uffdio_register.range.len = num_page * PAGE_SIZE;		// Taille de la zone (nombre de page x taille d'une page): il faut que ce soit un multiple de PAGE_SIZE, sinon UFFDIO_REGISTER ne marchera pas
+	uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING;
+
+	printf("[INFOS] %d pages couvertes par userfaultfd (%lld octets)\n", num_page, uffdio_register.range.len);
+
+	// Enregistre et setup notre userfaultfd avec la plage donnée (communication avec le noyau)
+	if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+		perror("[ERROR][set_userfaultfd] ioctl/uffdio_register");
+		exit(1);
+	}
+
+	// Démarrer le thread qui va gérer les défauts de pages et lui donne les paramètres requis
+	handle_params->uffd = uffd;
+	handle_params->nombre_page = num_page;
+	handle_params->pointeurZoneMemoire = region;
+
+	if(pthread_create(&pth_userfaultfd, NULL, handle_defaut, handle_params) != 0) {
+		perror("[ERROR][set_userfaultfd] pthread_create");
+		exit(1);
+	}
+
+	printf("[OK] Userfaultfd mise en place\n");
+}
+
+/**
+ * Initialisation de l'esclave, créer le connexion et s'enregistre au maître,
+ * met en place le userfaultfd pour les fautes de pages, et l'écoute sur un port
+ * les autres esclaves.
+ */
+void* InitSlave(char* HostMaster) {
+	int num_page;							// Nombre de pages allouées
+	struct memoire_pages * temp_memoire; 	// Structure temporaire pour la création de la mémoire des pages
+	long taille_recv;						// Taille de la mémoire partagée, reçue par le maître
+	int* port;								// Port d'écoute de l'esclave
+
+	port = malloc(sizeof(int));
+
+	// Etablir une connexion avec le maître
+	set_connection(HostMaster, port, &taille_recv);
+
+	// Nouvelle zone mémoire de la taille reçue par le maître avec aucun droit d'écriture/lecture, servira à la gestion
+	if((region = mmap(NULL, taille_recv, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
+		perror("[InitSlave] mmap");
 		exit(2);
 	}
 	
-	//Initialisation de variable globale utilisé par l'esclave
-	maitre_fd = connexion_FD;
-	region = adresse;
-	printf("-Pointeur zone mémoire :%p\n", region);
-	pthread_mutex_init(&mutex_esclave, NULL); //Mise en place du mutex
-	
-	//Calcule du nombre de page que l'on à alouer
+	// Mise en place du mutex
+	pthread_mutex_init(&mutex_esclave, NULL);
+
+	// Calcule du nombre de pages que l'on a à allouer
 	num_page = taille_recv / PAGE_SIZE;
     if((taille_recv % PAGE_SIZE) != 0){
 		num_page++;
 	}
 
-	//Création de la structure memoire qui a pour but de ce rappeller des droits de lecture/ecriture sur les pages et de leur validitée
+    // Création de la structure mémoire qui a pour but de se rappeler des droits de lecture/écriture sur les pages et de leurs validitées
 	memoire = malloc(sizeof(struct memoire_pages));
 
 	temp_memoire = memoire;
@@ -383,666 +475,541 @@ void* InitSlave(char* HostMaster) {
 		temp_memoire = temp_memoire->next;
 	}
 
-
-
-	//Démarrer un thread pour les demande de pages depuis d'autres esclaves
-	if(pthread_create(&pth_esclave, NULL, LoopSlave, (void *)&port)!= 0) {
-    	perror("Erreur de démarrage du thread 1\n");
+	// Démarrer un thread pour les demandes de pages depuis d'autres esclaves en cas d'invalidité de celles-ci
+	if(pthread_create(&pth_esclave, NULL, LoopSlave, (void *)port)!= 0) {
+		perror("[InitSlave] pthread_create");
     	exit(1);
     }
 
-    /*----------------------------------MISE EN PLACE DE USERFAULTFD--------------------------------------*/    
-	printf("- Mise en place du userfaultfd\n");
-
-	// Créer et activer l'objet userfaultfd (nouvelle mise en place de userfaultfd)
-    // -> _NR_userfaultfd : numéro de l'appelle système
-    // -> O_CLOEXEC : (FLAG) Permet le multithreading
-    // -> O_NONBLOCK : (FLAG) Ne pas bloquer durant POLL
-    uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
-    if (uffd == -1) {
-        perror("Problème de l'appelle système userfaultfd");
-        exit(1);
-    }
-
-    // Activer la version de l'api et vérifier les fonctionnalités
-    uffdio_api.api = UFFD_API;
-	uffdio_api.features = 0;
-
-    //IOCTL : permet de communiquer entre le mode user et kernel. On demande une requête de type UFFDIO_API qui va remplir notre structure uffdio_api
-    if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
-        perror("ioctl/uffdio_api");
-        exit(1);
-    }
-
-    //Vérifier que l'API récupérer est la bonne, que notre système est compatible avec userfaultfd API
-    if (uffdio_api.api != UFFD_API) {
-        fprintf(stderr, "unsupported userfaultfd api (1)\n");
-        exit(1);
-    }
-	/*else if (!(uffdio_api.features & UFFD_FEATURE_PAGEFAULT_FLAG_WP)) {
-    	fprintf(stderr, "unsupported userfaultfd api (3)\n");
-    	exit(1);
-    }*/
-
-    // Enregistrer la plage de mémoire du mappage que nous venons de créer pour qu'elle soit gérée par l'objet userfaultfd
-    // UFFDIO_REGISTER_MODE_MISSING: l'espace utilisateur reçoit une notification de défaut de page en cas d'accès à une page manquante (les pages qui n'ont pas encore fait l'objet d'une faute)
-    // UFFDIO_REGISTER_MODE_WP: l'espace utilisateur reçoit une notification de défaut de page lorsqu'une page protégée en écriture est écrite. Nécéssaire pour le handle de défaut de page
-    //Début de la zone mémoire (pointeur)
-    uffdio_register.range.start = (unsigned long)adresse;
-    //Sa taille (nombre de page * taille d'une page) si ce n'est pas un multiple de page, UFFDIO_REGISTER ne marchera pas
-    uffdio_register.range.len = num_page * PAGE_SIZE;
-    uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING;
-
-	printf("-Taille couverte par userfaultfd : %lld (nombre de page : %d)\n", uffdio_register.range.len,num_page);
-
-    //Enregistre et setup notre userfaultfd avec la plage donnée (communication avec le noyau)
-    if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-		perror("ioctl/uffdio_register");
-		exit(1);
-	}
-
-	//Démarrer le thread qui va gérer les défaut de pages (on lui donne des paramètres)
-    handle_params.uffd = uffd;
-	handle_params.nombre_page = num_page;
-	handle_params.pointeurZoneMemoire = adresse;
-
-	if(pthread_create(&pth_userfaultfd, NULL, handle_defaut, &handle_params) != 0) {
-    	perror("Erreur de démarrage du thread 2");
-    	exit(1);
-    }
+    // Mise en place du userfaultfd
+	set_userfaultfd(num_page);
 	
 	sleep(1);
-	return adresse;
+	return region;
 }
 
-// Trouver le numéro de page à partir d'une adresse
+/**
+ * Trouver le numéro de page à partir d'une adresse
+ */
 long trouver_numero_page(void* data) {
 	return ((data - region)*sizeof(*data))/PAGE_SIZE;
 }
 
-//Demande le droit au maître de lire sur la/les page(s) où ce trouve le "adr" de taille s. (bloquant quand un écrivain est deja présent) -> A COMPLETER
+/**
+ * Demande le droit au maître de verrouiller en lecture la(les)
+ * page(s) où se trouve l'adrese précisée (bloquera si un écrivain
+ * a déjà verrouillé la page)
+ */
 void lock_read(void* addr, int size) {
-	printf("\n--- LOCK_READ ---\n");
-	pthread_mutex_lock(&mutex_esclave);
+	pthread_mutex_lock(&mutex_esclave); 		//Met un mutex pour pas plusieurs lock/unlock en même temps.
 
-	// Requête envoyée au maître
-	int socket_esclave;
-	int debut = trouver_numero_page(addr);
-	int fin = trouver_numero_page(addr+size);
-	struct message message;
-	struct memoire_pages * temp_memoire;
+	int socket_esclave; 						//Socket de communication avec un autre esclave
+	int debut = trouver_numero_page(addr); 		//Première page de la demande de lecture
+	int fin = trouver_numero_page(addr+size);	//Dernière page de la demande de lecture
+	struct message message;						//message à envoyer au maître
+	struct memoire_pages * temp_memoire; 		//Structure pour les info des pages
+
+	// Création du message à envoyer.
 	message.type = REQUETE_LOCK_READ;
 	message.debut_page = debut;
 	message.fin_page = fin;
 
-	//printf("type : %d\ndebut : %d\nfin : %d\nsize : %d\n", message.type, message.debut_page,message.fin_page, size);
+	printf("[LOCK_READ] Je veux accéder en lecture aux pages P[%d-%d] (%d pages) !\n", message.debut_page, message.fin_page, message.fin_page-message.debut_page+1);
 
-	//
-	//printf("Nombre de pages = %d\n", message.fin_page-message.debut_page+1);
-	//
-
-	//Demande de lock
+	//Demande de vérous sur les pages donnée dans le message.
 	if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("write");
+		perror("[ERROR][lock_read] send (1)");
 		exit(1);
 	}
 
-	printf("Attente écrivain...\n");
+	printf("[LOCK_READ] Attente des écrivains...\n");
+	//Partie bloquante du programme, attente que tout les écrivain des page on fini.
 	if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("read");
+		perror("[ERROR][lock_read] recv (1)");
 		exit(1);
 	}
-	printf("Fin attente\n");
+	printf("[LOCK_READ] Fin attente\n");
 
+	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 	if(message.type != ACK){
-		printf("Problème synchronisation!!%d\n",message.type);
+		printf("[ERROR][lock_read] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 
-	// Page reçue du maître: restera bloquer sur le read
-	// bloquant si un écrivain est actuellement sur la page
-	for(int i=debut ; i<=fin ; i++) { //Recevoir un où plusieurs pages
-		printf("PAGE NUMERO : %d\n", i);
+	printf("[LOCK_READ] Je peux accéder à(aux) page(s) !\n");
+
+	//Pour chaque pages à obtenir le vérous.
+	for(int i=debut ; i<=fin ; i++) {
+		//On récupére les information de notre page.
 		temp_memoire = trouver_mem_page(i);
-		void* data = addr - (addr-region) + PAGE_SIZE*i; //Pointeur vers la page reçu
+		//Calcule le pointeur vers la page à vérouillé.
+		void* data = addr - (addr-region) + PAGE_SIZE*i;
+
+		//On change	les droit de lecture seulement si on n'a pas le droit de lecture actuellement ou que notre page n'est pas valide.
 		if(temp_memoire->droit_read == 0 || temp_memoire->validite == 0){
-			printf("(Debug : Page invalide? %d)\n", temp_memoire->validite);
 
-			printf("Donne droit d'écrire pour récupérer la page\n");
-			//Donner le droit de lecture sur la page
-			if(mprotect(data, PAGE_SIZE, PROT_WRITE|PROT_READ) != 0){
-				perror("mprotect1");
-			}
-
+			//Dans le cas où la page est invalide ou qu'on ne la jamais demandée.
 			if(temp_memoire->validite == 0){
-				printf("Reçois le moyen de récupérer la page\n");
+				//Donner le droit de lecture/écriture sur la page pour la copier
+				if(mprotect(data, PAGE_SIZE, PROT_WRITE|PROT_READ) != 0){
+					perror("[ERROR][lock_read] mprotect (1)");
+					exit(1);
+				}
+
+				//Le maître envoie un message pour que l'esclave sache s'il va recevoir la page directement depuis le maître ou va devoir demander un autre esclave.
 				if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-					perror("read");
+					perror("[ERROR][lock_read] recv (2)");
 					exit(1); 
 				}
 
-
+				//Si on reçois la page directement du maître.
 				if(message.type == RETOUR_DEMANDE_PAGE_ENVOIE){
-					printf("Recupération depuis le maître\n");
+					printf("[LOCK_READ] Recupération de P%d depuis le maître !\n", i);
+
+					//On la copie au bonne emplacement.
 					if(recv(maitre_fd, data, PAGE_SIZE, 0) == -1) {
-						perror("read");
+						perror("[ERROR][lock_read] recv (3)");
 						exit(1);
 					}
+				//Sinon, on doit allez la chercher sur l'esclave propriétaire.
 				}else if(message.type == RETOUR_DEMANDE_PAGE_VERS_ESCLAVE){
-					printf("Recupération depuis l'esclave\n");
-					//Ouverture d'un socket TCP
+					printf("[LOCK_READ] Recupération de P%d depuis un esclave !\n", i);
+					//Ouvre un socket en TCP.
 					if((socket_esclave = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-						perror("Problème d'initialisation du socket\n");
+						perror("[ERROR][lock_read] socket");
 						exit(1);
 					}
 
-					printf("Connexion\n");
-					//Tant que pas connecter à l'esclave on réessaye
+					//On ce connecte à l'esclave (répéte si ne répond pas).
 					while(connect(socket_esclave, (struct sockaddr*)&message.esclave_info, sizeof(message.esclave_info)) == -1) {
-						perror("Connection échouer");
+						perror("[ERROR][lock_read] connect");
 						sleep(2);
 					}
 
-					//On envoie le numéro de page à recevoir	
-					printf("Envoie demande page\n");
+					//On envoie le numéro de page à recevoir à l'esclave
 					message.type = REQUETE_DEMANDE_PAGE;
 					message.debut_page = i;			
 					if(send(socket_esclave, &message, sizeof(struct message),0) == -1){
-						perror("send3");
+						perror("[ERROR][lock_read] send (2)");
 						exit(1);
 					}
 
-					printf("Reception de page\n");
-					//Reception de la page que l'on verse dans buf
+					//Reception de la page, mis au bonne emplacement.
 					if(recv(socket_esclave, data, PAGE_SIZE, 0)== -1){
-						perror("recv3");
+						perror("[ERROR][lock_read] recv (4)");
 						exit(1);
 					}
 
-					printf("Page reçu\n");
-
-					//Ferme la connexion à l'esclave
+					//Ferme la connexion à l'esclave et le socket.
 					if(shutdown(socket_esclave, SHUT_RDWR) == -1){
-						perror("shutdown");
+						perror("[ERROR][lock_read] shutdown");
 					}
 				
 					if(close(socket_esclave)){
-						perror("shutdown");
-						exit(1);
-					}		
-
-					printf("Envoie du ACK au maître pour confirmée cette page\n");
-					//Confirme au maître que tout c'est bien passer
-					message.type = ACK;
-					if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-						perror("write");
+						perror("[ERROR][lock_read] close");
 						exit(1);
 					}
-				}else{
-					printf("pas reçu :< %d", message.type);
-					exit(1);
+
+					//Confirme au maître que tout c'est bien passer (synchronisation).
+					message.type = ACK;
+					if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
+						perror("[ERROR][lock_read] send (3)");
+						exit(1);
+					}
 				}
+				//Après la récupération, la page est donc valide et à jour.
 				temp_memoire->validite = 1;
 			}
 
-			printf("Met les droit de lecture uniquement sur la page\n");
+			// Dans notre structure d'information des page, on met le droit de lecture (Pour pas a redemander plusieur fois). Et on met les droit de lecture sur la zone mémoire en question.
 			if(mprotect(data, PAGE_SIZE, PROT_READ) != 0){
-				perror("mprotect2");
+				perror("[ERROR][lock_read] mprotect (2)");
 			}
 			temp_memoire->droit_read = 1;
 		}
 
-		printf("ACK final\n");
+		//Attente que le maître finise ses traitement (Pour que les deux soit synchronisée sur le résultat).
 		if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-			perror("read");
+			perror("[ERROR][lock_read] recv (5)");
 			exit(1);
 		}
 
+		//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 		if(message.type != ACK){
-			printf("%d\n",message.type);
-			perror("synch");
+			printf("[ERROR][lock_read] Problème de synchronisation (%d)\n", message.type);
 			exit(1);
 		}
+
 	}
-	//printf("Pointeur2 : %p\nPointeur + size : %p\n", addr, addr+size);
+
+	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
-	printf("Droits donnés\n");
 }
 
-//Rend le vérrou de la ou les pages en lecture -> A COMPLETER
+/**
+ * Rend le vérrou de la ou les pages en lecture.
+ */
 void unlock_read(void* addr, int size) {
-	printf("\n--- UNLOCK_READ ---\n");
-	pthread_mutex_lock(&mutex_esclave);
+	pthread_mutex_lock(&mutex_esclave); //Met un mutex pour pas plusieurs lock/unlock en même temps.
 
-	// Requête envoyée au maître
-	struct message message;
-	struct memoire_pages * temp_memoire;
+	struct message message; // Requête envoyée au maître.
+	struct memoire_pages * temp_memoire; // Structure information des page que l'on touche.
+
+	//Création du message à envoyer. Une requête pour enlever le vérrou sur les pages aux maître.
 	message.type = REQUETE_UNLOCK_READ;
-	message.debut_page = trouver_numero_page(addr);
-	message.fin_page = trouver_numero_page(addr+size);
+	message.debut_page = trouver_numero_page(addr); //Calcule l'adresse de la première page.
+	message.fin_page = trouver_numero_page(addr+size); //Calcule l'adresse de la dernière page.
 
-	for(int i=message.debut_page ; i<=message.fin_page ; i++) { //Recevoir un où plusieurs pages
-		void* data = addr - (addr-region) + PAGE_SIZE*i; //Pointeur vers la page reçu
+	//Demande de dévérouiller les pages en lecture aux maître.
+	if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
+		perror("[ERROR][unlock_read] send");
+		exit(1);
+	}
+
+	//Pour chaque page à dévérouiller (traitement locale).
+	for(int i=message.debut_page ; i<=message.fin_page ; i++) {
+		printf("[UNLOCK_READ] Je libère P%d !\n", i);
+		//Calcule le pointeur vers la page à dévérouillé.
+		void* data = addr - (addr-region) + PAGE_SIZE*i;
+		//On récupére les information de notre page.
 		temp_memoire = trouver_mem_page(i);
+
+		// Retire le droit de lecture sur la page en question, si l'esclave essaye de lire après cette fonction, il va avoir un défaut de segmentation.
 		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
-			perror("mprotect");
+			perror("[ERROR][unlock_read] mpeortect");
+			exit(1);
 		}
+
+		// On change la variable pour dire que l'on à plus aucun droit sur la lecture (Donc on va devoir repasser par le maître si on veux un droit).
 		temp_memoire->droit_read = 0;
 	}
 
-	//
-	printf("nombre de pages = %d\n", message.fin_page-message.debut_page+1);
-	//
+	printf("[UNLOCK_READ] Nombre de pages libérées: %d\n", message.fin_page-message.debut_page+1);
 
-	//Demande de unlock
-	if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("write");
-		exit(1);
-	}
-
-	//Attente que le maître finise
+	//Attente que le maître finise ses traitement (Pour que les deux soit synchronisée sur le résultat).
 	if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("recv");
+		perror("[ERROR][unlock_read] recv");
 		exit(1);
 	}
 
+	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 	if(message.type != ACK){
-		printf("Problème synchronisation!!%d\n",message.type);
+		printf("[ERROR][unlock_read] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 
+	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
 }
 
-//Demande le droit au maître d'écrire sur la/les page(s) où ce trouve le "adr" de taille s. (bloquant quand un écrivain ou lecteur deja présent) -> A COMPLETER
+//Demande le droit au maître d'écrire sur la/les page(s) où ce trouve le "adr" de taille s (bloquant quand un écrivain ou lecteur deja présent).
 void lock_write(void* addr, int size) {
-	printf("--- LOCK_WRITE ---\n");
-	pthread_mutex_lock(&mutex_esclave);
+	pthread_mutex_lock(&mutex_esclave); //Met un mutex pour pas plusieurs lock/unlock en même temps.
 
-	// Requête envoyée au maître
-	struct message message;
-	struct memoire_pages * temp_memoire;
-	int debut = trouver_numero_page(addr); 
-	int fin = trouver_numero_page(addr+size);
-	int socket_esclave = 0;
+	int socket_esclave; 						//Socket de communication avec un autre esclave
+	int debut = trouver_numero_page(addr); 		//Première page de la demande de lecture
+	int fin = trouver_numero_page(addr+size);	//Dernière page de la demande de lecture
+	struct message message;						//message à envoyer au maître
+	struct memoire_pages * temp_memoire; 		//Structure pour les info des pages
+
+	// Création du message à envoyer.
 	message.type = REQUETE_LOCK_WRITE;
 	message.debut_page = debut;
 	message.fin_page = fin;
 
-	//
-	printf("nombre de pages = %d\n", message.fin_page-message.debut_page+1);
-	//
+	printf("[LOCK_WRITE] Je veux accéder en écriture aux pages P[%d-%d] (%d pages) !\n", message.debut_page, message.fin_page, message.fin_page-message.debut_page+1);
 
-	printf("type : %d\ndebut : %d\nfin : %d\nsize : %d\n", message.type, message.debut_page,message.fin_page, size);
-
-	//Demande de lock
+	//Demande de vérous sur les pages donnée dans le message.
 	if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("write");
+		perror("[ERROR][lock_write] send (1)");
 		exit(1);
 	}
 
-	printf("Attente écrivain...\n");
+	printf("[LOCK_WRITE] Attente de la fin des autres écrivains/lecteurs...\n");
+	//Partie bloquante du programme, attente que tout les écrivain et lecteur des page on fini.
 	if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("read");
+		perror("[ERROR][lock_write] recv (1)");
 		exit(1);
 	}
-	printf("Fin attente\n");
+	printf("[LOCK_WRITE] Fin attente.\n");
 
+	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 	if(message.type != ACK){
-		printf("Problème synchronisation!!%d\n",message.type);
+		printf("[ERROR][lock_write] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 
-	//Recevoir les pages à écrire
+	printf("[LOCK_WRITE] Je peux accéder à(aux) page(s) !\n");
+
+	//Pour chaque pages à obtenir le lock.
 	for(int i=debut ; i<=fin ; i++) {
+		//On récupére les information de notre page.
 		temp_memoire = trouver_mem_page(i);
+		//Calcule le pointeur vers la page à vérouillé.
 		void* data = addr - (addr-region) + PAGE_SIZE*i;
+
+		//On change les droit d'écriture seulement si on n'a pas le droit d'écriture actuellement ou que notre page n'est pas valide.
 		if(temp_memoire->droit_write == 0 || temp_memoire->validite == 0){
 			
-			if(mprotect(data, PAGE_SIZE, PROT_READ|PROT_WRITE)!= 0){
-				perror("mprotect1");
-			}
-
+			//Dans le cas où la page est invalide ou qu'on ne la jamais demandée.
 			if(temp_memoire->validite == 0){
-				if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-					perror("read");
+				//Donne les droits de lecture/écriture temporairement juste pour copier la page.
+				if(mprotect(data, PAGE_SIZE, PROT_READ|PROT_WRITE)!= 0){
+					perror("[ERROR][lock_write] mprotect (1)");
 					exit(1);
 				}
 
+				//Le maître envoie un message pour que l'esclave sache s'il va recevoir la page directement depuis le maître ou va devoir demander un autre esclave.
+				if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
+					perror("[ERROR][lock_write] recv (2)");
+					exit(1);
+				}
+
+				//Si on reçois la page directement du maître.
 				if(message.type == RETOUR_DEMANDE_PAGE_ENVOIE){
-					printf("Recupération depuis le maître\n");
+					printf("[LOCK_READ] Recupération de P%d depuis le maître !\n", i);
+
+					//On la copie au bonne emplacement.
 					if(recv(maitre_fd, data, PAGE_SIZE, 0) == -1) {
-						perror("read");
+						perror("[ERROR][lock_write] recv (3)");
 						exit(1);
 					}
-					printf("- Récupérer\n");
+				//Sinon, on doit allez la chercher sur l'esclave propriétaire.
 				}else if(message.type == RETOUR_DEMANDE_PAGE_VERS_ESCLAVE){
-					printf("Recupération depuis l'esclave\n");
-					//Ouverture d'un socket TCP
+					printf("[LOCK_READ] Recupération de P%d depuis un esclave !\n", i);
+					//Ouvre un socket en TCP.
 					if((socket_esclave = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-						perror("Problème d'initialisation du socket\n");
+						perror("[ERROR][lock_write] socket");
 						exit(1);
 					}
 
-					//Tant que pas connecter à l'esclave on réessaye
+					//On ce connecte à l'esclave (répéte si ne répond pas).
 					while(connect(socket_esclave, (struct sockaddr*)&message.esclave_info, sizeof(message.esclave_info)) == -1) {
-						perror("Connection échouer");
+						perror("[ERROR][lock_write] connect");
 						sleep(2);
 					}
 
-					//On envoie le numéro de page à recevoir		
+					//On envoie le numéro de page à recevoir à l'esclave
 					message.type = REQUETE_DEMANDE_PAGE;
 					message.debut_page = i;			
 					if(send(socket_esclave, &message, sizeof(struct message),0) == -1){
-						perror("send3");
+						perror("[ERROR][lock_write] send (2)");
 						exit(1);
 					}
 
-					//Reception de la page que l'on verse dans buf
+					//Reception de la page, mis au bonne emplacement.
 					if(recv(socket_esclave, data, PAGE_SIZE, 0)== -1){
-						perror("recv3");
+						perror("[ERROR][lock_write] recv (4)");
 						exit(1);
 					}
 
-					//Ferme la connexion à l'esclave
+					//Ferme la connexion à l'esclave et le socket.
 					if(shutdown(socket_esclave, SHUT_RDWR) == -1){
-						perror("shutdown");
+						perror("[ERROR][lock_write] shutdown");
 					}
 				
 					if(close(socket_esclave)){
-						perror("shutdown");
+						perror("[ERROR][lock_write] close");
 						exit(1);
 					}
 
-					//Confirme au maître que tout c'est bien passer
+					//Confirme au maître que tout c'est bien passer (synchronisation).
 					message.type = ACK;
 					if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-						perror("write");
+						perror("[ERROR][lock_write] send (3)");
 						exit(1);
 					}
 				}
+				//Après la récupération, la page est donc valide et à jour.
+				temp_memoire->validite = 1;
 			}
 
-			temp_memoire->validite = 1;
+			// Dans notre structure d'information des page, on met le droit d'écriture. (Pour pas a redemander plusieur fois). Et on met les droit d'écriture sur la zone mémoire en question.
 			if(mprotect(data, PAGE_SIZE, PROT_WRITE) != 0){
-				perror("mprotect2");
+				perror("[ERROR][lock_write] mprotect (2)");
 			}
 			temp_memoire->droit_write = 1;
 		}
 
+		//Attente que le maître finise ses traitement (Pour que les deux soit synchronisée sur le résultat).
 		if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-			perror("write");
+			perror("[ERROR][lock_write] recv (5)");
 			exit(1);
 		}
 
+		//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 		if(message.type != ACK){
-			printf("%d\n",message.type);
-			perror("synch");
+			printf("[ERROR][lock_write] Problème de synchronisation (%d)\n", message.type);
 			exit(1);
 		}
-		printf("- Passage\n");
 	}	
-	printf("--- FIN LOCK_WRITE ---\n");
+
+	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
 }
 
-//Rend le vérrou de la ou les pages en écriture -> A COMPLETER
+/**
+ * Rend le vérrou de la ou les pages en écriture.
+ */
 void unlock_write(void* addr, int size) {
-	printf("--- UNLOCK_WRITE ---\n");
-	pthread_mutex_lock(&mutex_esclave);
+	pthread_mutex_lock(&mutex_esclave); //Met un mutex pour pas plusieurs lock/unlock en même temps.
 
-	// Requête envoyée au maître
-	struct message message;
-	struct memoire_pages * temp_memoire;
+	struct message message; // Requête envoyée au maître.
+	struct memoire_pages * temp_memoire; // Structure information des page que l'on touche.
+
+	//Création du message à envoyer. Une requête pour enlever le vérrou en écriture sur les pages aux maître.
 	message.type = REQUETE_UNLOCK_WRITE;
-	message.debut_page = trouver_numero_page(addr);
-	message.fin_page = trouver_numero_page(addr+size);
+	message.debut_page = trouver_numero_page(addr); //Calcule l'adresse de la première page.
+	message.fin_page = trouver_numero_page(addr+size); //Calcule l'adresse de la dernière page.
 
-	for(int i=message.debut_page ; i<=message.fin_page ; i++) { //Recevoir un où plusieurs pages
-		void* data = addr - (addr-region) + PAGE_SIZE*i; //Pointeur vers la page reçu
-		temp_memoire = trouver_mem_page(i);
-		temp_memoire->droit_write = 0;
-		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
-			perror("mprotect2");
-		}
-	}
-
-	//
-	printf("nombre de pages = %d\n", message.fin_page-message.debut_page+1);
-	//
-
-	//Demande de unlock
+	//Demande de dévérouiller les pages en écriture aux maître.
 	if(send(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("write");
+		perror("[ERROR][unlock_write] send");
 		exit(1);
 	}
 
+	//Pour chaque page à dévérouiller (traitement locale).
 	for(int i=message.debut_page ; i<=message.fin_page ; i++) {
+		//Calcule le pointeur vers la page à dévérouillé.
 		void* data = addr - (addr-region) + PAGE_SIZE*i;
-		if(mprotect(data, PAGE_SIZE, PROT_NONE)!= 0){
-			perror("mprotect2");
+		//On récupére les information de notre page.
+		temp_memoire = trouver_mem_page(i);
+		printf("[UNLOCK_WRITE] Je libère P%d !\n", i);
+		// Retire le droit d'écriture sur la page en question, si l'esclave essaye d'écrire après cette fonction, il va avoir un défaut de segmentation.
+		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
+			perror("[ERROR][unlock_write] mprotect");
+			exit(1);
 		}
+
+		// On change la variable pour dire que l'on à plus aucun droit sur l'écriture (Donc on va devoir repasser par le maître si on veux un droit).
+		temp_memoire->droit_write = 0;
 	}
 
-	//Attente que le maître finise
+	printf("[UNLOCK_WRITE] Nombre de pages libérées: %d\n", message.fin_page-message.debut_page+1);
+
+	//Attente que le maître finise ses traitement (Pour que les deux soit synchronisée sur le résultat).
 	if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("recv");
+		perror("[ERROR][unlock_write] recv");
 		exit(1);
 	}
 
+	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 	if(message.type != ACK){
-		printf("synch unlock write : %d", message.type);
+		printf("[ERROR][unlock_read] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 
+	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
-	printf("--- FIN UNLOCK_WRITE ---\n");
 }
 
-//Rendre les pages aux maître et finalisée l'esclave -> A FINALISÉE 
-void endSlave(void * data, int size){
-	printf("\n--- FIN ESCLAVE ---\n");
-	int nombre_page_rendre; //Contient le nombre de page que l'on va rendre aux maître
-	int nombre_page;
-	int requete; //Requete envoyer/reçu
-	struct memoire_pages * temp_memoire; //Structure temporaire pour la libération de la mémoire info
+/**
+ * Rendre les pages au maître, mettre fin aux threads et libérer la mémoire
+ */
+void endSlave(void* data, int size){
+	printf("[~] Tentative de terminaison de l'esclave...\n");
 	
-	//Arrête les thread.
-	printf("Arrêt des thread\n");
+	int nombre_page;
+	int nombre_page_rendre; 				// Contient le nombre de page que l'on va rendre au maître
+	int requete; 							// Message envoyé/reçu
+	struct memoire_pages * temp_memoire; 	// Structure temporaire pour la libération de la mémoire info
+
+	// Arrêt du thread gérant les invalidités de page
     if (pthread_cancel(pth_esclave) != 0){
-		perror("Erreur fin de thread 1");
+    	perror("[ERROR][endSlave] pthread_cancel (1)");
 		exit(1);
 	}
+    // Arrêt du thread gérant userfaulfd
 	if (pthread_cancel(pth_userfaultfd) != 0){
-		perror("Erreur fin de thread 1");
+		perror("[ERROR][endSlave] pthread_cancel (2)");
 		exit(1);
 	}
 
-	//Demande de déclancher une fin au maître
-	printf("Demande d'arrêt au maître\n");
+	// Demande de déclenchement de terminaison au maître
+	printf("[~] Demande d'arrêt envoyée au maître...\n");
 	requete = REQUETE_FIN;
-	if(send(maitre_fd, &requete, sizeof(int), 0)== -1){
-		perror("Problème communication 1");
+	if(send(maitre_fd, &requete, sizeof(int), 0) == -1){
+		perror("[ERROR][endSlave] send (1)");
 		exit(1);
 	}
 
-	//Le nombre de page à rendre au maître
-	printf("Rendre les pages au maître\n");
-	if(recv(maitre_fd, &nombre_page_rendre, sizeof(int), 0)== -1){
-		perror("Problème communication 2");
+	// Réception du nombre de pages modifiées que devra réceptionner le maître de la part de l'esclave actuel
+	printf("[~] Envoi des pages au maître...\n");
+	if(recv(maitre_fd, &nombre_page_rendre, sizeof(int), 0) == -1){
+		perror("[ERROR][endSlave] recv (1)");
 		exit(1);
 	}
 
-	//Lui donnée les pages qui lui appartienne actuellement, une par une. -> A Compléter
-	while(nombre_page_rendre != 0){
+	// Envoyer les pages modifiées au maître
+	while(nombre_page_rendre != 0) {
+
+		// Numéro de la page à recevoir
 		if(recv(maitre_fd, &nombre_page, sizeof(int), 0)== -1){
-			perror("Problème communication 3");
+			perror("[ERROR][endSlave] recv (2)");
 			exit(1);
 		}
-		printf("Rendre page %d\n", nombre_page);
 
-		void* data = region + PAGE_SIZE*nombre_page; //Pointeur vers la page reçu
+		// Adresse de début de page
+		void* data = region + PAGE_SIZE*nombre_page;
 		
+		// Attribuer le droit de lecture sur la page concernée
 		if(mprotect(data, PAGE_SIZE, PROT_READ) != 0){
-			perror("mprotect2");
+			perror("[ERROR][endSlave] mprotect (1)");
 			exit(1);
 		}
 
+		// Envoi de la page concernée
 		if(send(maitre_fd, data, PAGE_SIZE, 0)== -1){
-			perror("Problème communication 4");
+			perror("[ERROR][endSlave] send (2)");
 			exit(1);
 		}
 
+		// Retirer les droits sur la page concernée
 		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
-			perror("mprotect2");
+			perror("[ERROR][endSlave] mprotect (2)");
 			exit(1);
 		}
+
 		nombre_page_rendre--;
+
+		printf("[OK] P%d envoyée au maître\n", nombre_page);
 	}
 
-	//Attente que le maître finise
+	// Attente un acquittement du maître
 	struct message message;
 	if(recv(maitre_fd, &message, sizeof(struct message), 0) == -1) {
-		perror("recv");
+		perror("[ERROR][endSlave] recv (3)");
 		exit(1);
 	}
 
 	if(message.type != ACK){
-		printf("synch unlock write : %d", message.type);
+		printf("[ERROR][endSlave] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 
+	// Fermeture de la connexion
 	if(shutdown(maitre_fd, SHUT_RDWR) == -1){
-		perror("shutdown");
+		perror("[ERROR][endSlave] shutdown");
 		exit(1);
 	}
 
 	if(close(maitre_fd) == -1){
-		perror("shutdown");
+		perror("[ERROR][endSlave] close");
 		exit(1);
 	}
 
-	//Libère la mémoire partagé local
-	printf("Libération de mémoire\n");
+	// Libèrer la mémoire partagée locale
 	if(munmap(data, size) == -1){
-		perror("Erreur unmmap!");
+		perror("[ERROR][endSlave] munmap");
 	}
 
-	//Libèrer la mémoire info
+	// Libèrer la mémoire info
 	temp_memoire = memoire;
 	while(temp_memoire != NULL){
 		memoire = temp_memoire->next;
 		free(temp_memoire);
 		temp_memoire = memoire;
 	}
-	printf("Fin Esclave\n");
+
+	printf("[OK] Terminaison de l'esclave ! A bientôt !\n");
 }
-
-
-
-
-
-/*ANCIENT CODE USERFAULTFD
-printf("- Défaut de lecture/écriture\n");
-				
-				//On calcule le numéro de la page
-				page_fault = (addr_fault - (long int)p.pointeurZoneMemoire) /PAGE_SIZE;
-				req_demande_page = REQUETE_DEMANDE_PAGE;
-				
-				printf("- Page n°%d\n", page_fault);
-				//Envoie de la demande de requête, puis le numéro de page
-				if(send(maitre_fd, &req_demande_page, sizeof(int), 0)== -1){
-					perror("send1");
-				//Ouverture d'un socket TCP
-					if((socket_esclave = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-						perror("Problème d'initialisation du socket\n");
-						goto end;
-					}
-
-					//Tant que pas connecter à l'esclave on réessaye
-					while(connect(socket_esclave, (struct sockaddr*)&addr_esclave, sizeof(addr_esclave)) == -1) {
-						perror("Connection échouer");
-						sleep(2);
-					}
-
-					printf("-Connecter\n");
-					//On envoie le numéro de page à recevoir					
-					if(send(socket_esclave, &page_fault, sizeof(int),0) == -1){
-						perror("send3");
-						goto end;
-					}
-
-					//Reception de la page que l'on verse dans buf
-					if(recv(socket_esclave, buf, PAGE_SIZE, 0)== -1){
-						perror("recv3");
-						goto end;
-					}
-
-					//Ferme la connexion à l'esclave
-					shutdown(socket_esclave, SHUT_RDWR);
-					goto end;
-				}
-				if(send(maitre_fd, &page_fault, sizeof(int),0) == -1){
-					perror("send2");
-					goto end;
-				}
-				//Reçois la réponse du maître
-				if(recv(maitre_fd, &req_demande_page, sizeof(int), 0)== -1){
-					perror("recv1");
-					goto end;
-				}
-				printf("- Réponse Maître: %d\n", req_demande_page);
-
-				//Alloue le buffer car on va bientôt mettre une page dedans
-				buf = malloc(PAGE_SIZE);
-
-				//Si la réponse est de type RETOUR_DEMANDE_PAGE_ENVOIE, alors le maître nous envoie la page lui-même
-				if(req_demande_page == RETOUR_DEMANDE_PAGE_ENVOIE){
-					printf("- Récupère la page depuis le maître\n");
-					//Reception de la page que l'on verse dans buf
-					if(recv(maitre_fd, buf, PAGE_SIZE, 0)== -1){
-						perror("recv2");
-						goto end;
-					}
-				//Si la réponse est de type RETOUR_DEMANDE_PAGE_VERS_ESCLAVE, alors il est nécéssaire de demandé à un esclave 
-				}else if(req_demande_page == RETOUR_DEMANDE_PAGE_VERS_ESCLAVE){
-					printf("- Récupère la page depuis un autre eclave\n");
-					
-					//Reception des information de l'esclave 
-					if(recv(maitre_fd, addr_esclave, sizeof(struct sockaddr_in), 0)== -1){
-						perror("recv2");
-						goto end;
-					}
-					
-					printf("- Connexion Esclave\n");
-					//Ouverture d'un socket TCP
-					if((socket_esclave = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-						perror("Problème d'initialisation du socket\n");
-						goto end;
-					}
-
-					//Tant que pas connecter à l'esclave on réessaye
-					while(connect(socket_esclave, (struct sockaddr*)&addr_esclave, sizeof(addr_esclave)) == -1) {
-						perror("Connection échouer");
-						sleep(2);
-					}
-
-					printf("-Connecter\n");
-					//On envoie le numéro de page à recevoir					
-					if(send(socket_esclave, &page_fault, sizeof(int),0) == -1){
-						perror("send3");
-						goto end;
-					}
-
-					//Reception de la page que l'on verse dans buf
-					if(recv(socket_esclave, buf, PAGE_SIZE, 0)== -1){
-						perror("recv3");
-						goto end;
-					}
-
-					//Ferme la connexion à l'esclave
-					shutdown(socket_esclave, SHUT_RDWR);
-				//Cas où le maître n'a pas su nous répondre
-				}else{
-					printf("- Pas de droit de lecture\n");
-				}*/

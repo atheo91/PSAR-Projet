@@ -1,18 +1,9 @@
-#include <netinet/in.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <netdb.h>
-#include <sys/mman.h>
-#include <fcntl.h>
 #include <time.h>
 
 #include "lib.h"
-
-#define TAB_SIZE 10000
 
 int main() {
 	char * HostMaster = "localhost";
@@ -73,7 +64,7 @@ int main() {
 		}
 	}
 
-	//Etape 4 : Finaliser
+	// Etape 4 : Finaliser
 	endSlave(local_data, sizeof(struct data));
 	return 0;
 }

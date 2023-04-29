@@ -5,9 +5,10 @@
 
 /***** CONSTANTES *****/
 
+#define TAB_SIZE							9217
 #define NB_PAGE_MAX 						1024
 #define PAGE_SIZE 							4096
-#define PORT_MAITRE 						10095
+#define PORT_MAITRE 						10098
 
 #define REQUETE_INIT 						1
 #define REQUETE_DEMANDE_PAGE 				2
@@ -26,12 +27,12 @@
 /***** STRUCTURES *****/
 
 // Donnée répartie example
-struct data{
+struct data {
 	int id;
-	int data[10240];
+	int data[TAB_SIZE];
 };
 
-// --- STRUCTURES MAITRE ---
+// --- STRUCTURES MAÎTRE ---
 
 // Informations sur chaque page
 struct page {
@@ -99,7 +100,7 @@ struct message {
 };
 
 
-/***** FONCTIONS *****/
+/***** SIGNATURE DES FONCTIONS *****/
 
 // --- PARTIE MAITRE ---
 void *InitMaster(int size);
@@ -116,7 +117,7 @@ void supprimer_esclave(struct esclave* esclave);
 
 void desallouer_liste_esclaves();
 
-void afficher_lecteurs(struct lecteur* lecteurs);
+void afficher_lecteurs(struct lecteur* lecteurs, char* s);
 
 int je_suis_lecteur(struct page* page, struct esclave* esclave);
 
@@ -138,7 +139,7 @@ void desallouer_lecteurs(struct page* page);
 
 int est_dans_cache(struct esclave* esclave, struct page* page);
 
-void invalider_page(struct page* page, int numero);
+void invalider_page(int fd, struct page* page, int numero);
 
 void do_lock_read(struct message message, struct esclave* esclave);
 
@@ -147,6 +148,10 @@ void do_unlock_read(struct message message, struct esclave* esclave);
 void do_lock_write(struct message message, struct esclave* esclave);
 
 void do_unlock_write(struct message message, struct esclave* esclave);
+
+void do_init(struct message msg, struct esclave *esclave_actuel, int* esclave_end);
+
+void do_fin(struct esclave* esclave_actuel, int* esclave_end);
 
 static void *slaveProcess(void * param);
 
@@ -163,10 +168,14 @@ void unlock_write(void *adr, int s);
 
 void endSlave(void * data, int size);
 
-struct memoire_pages * trouver_mem_page(int numero);
-
-void* LoopSlave(void * port);
+void* LoopSlave(void * adresse);
 
 static void *handle_defaut(void * arg);
+
+unsigned long get_taille_memoire(int connexion_FD);
+
+void set_connection(char* HostMaster, int* port, long* taille_recv);
+
+void set_userfaultfd(int num_page);
 
 long trouver_numero_page(void* data);
