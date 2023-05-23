@@ -5,12 +5,20 @@
 
 #include "lib.h"
 
-int main() {
+int main(int argc, char **argv) {
 	char * HostMaster = "localhost";
 	int fin = 0;
 	int select = 0;
 	int valeur = 0;
 	struct data * local_data;
+
+	if(argc == 2){
+		HostMaster = argv[1];
+		printf("Nom maître : %s\n", argv[1]);
+	} else{
+		HostMaster = "localhost";
+		printf("Comportement par défaut nom maître : localhost\n");
+	}
 
 	//Etape 1 : Initialiser la mémoire avec 0 droit dessus. Lancer le handler de défaut de page(thread 1), et une handler de requête distante(thread 2) 
 	local_data =  (struct data *) InitSlave(HostMaster);

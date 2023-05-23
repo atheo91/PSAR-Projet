@@ -12,12 +12,20 @@
 #define TERMINAISON			5
 #define ERROR				-1
 
-int main() {
+int main(int argc, char **argv) {
 	char * HostMaster = "localhost";
 	struct data * local_data;
 	int terminaison=0, v1=NONE, v2=NONE;
 	char *p, tmp[50];
 	long choix;
+
+	if(argc == 2){
+		HostMaster = argv[1];
+		printf("Nom maître : %s\n", argv[1]);
+	} else{
+		HostMaster = "localhost";
+		printf("Comportement par défaut nom maître : localhost\n");
+	}
 
 	// Etape 1 : Initialiser la mémoire avec 0 droit dessus. Lancer le handler de défaut de page(thread 1), et une handler de requête distante(thread 2)
 	local_data =  (struct data*) InitSlave(HostMaster);
