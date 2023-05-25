@@ -94,7 +94,7 @@ void* LoopSlave(void * port){
 			// Les pages qu'on possède ont été invalidées par un autre esclave
 			case REQUETE_INVALIDE_PAGE:
 				for(int i=0 ; i<msg.fin_page ; i++) {
-					printf("[INVAL] Demande d'invalidition d'une page: P%d invalidée par M%d\n", i, esclave_FD);
+					printf("[INVAL] Demande d'invalidition d'une page: P%d\n", i);
 				}
 
 				temp_memoire = trouver_mem_page(msg.debut_page);
@@ -319,16 +319,16 @@ void set_connection(char* HostMaster, int* port, long* taille_recv) {
 	}
 
 	// Récupérer l'adresse IP
-	ipv4 = ((struct sockaddr_in*) res->ai_addr)->sin_addr;
+	memset((void*)&addr, 0, sizeof(addr));
+	addr.sin_family = ((struct sockaddr_in*) res->ai_addr)->sin_family;
+	addr.sin_port = htons(PORT_MAITRE);
+	addr.sin_addr = ((struct sockaddr_in*) res->ai_addr)->sin_addr;
 
 	// Libèrer les infos
 	freeaddrinfo(res);
 
 	// Mettre en place la structure pour communiquer avec le maître
-	memset((void*)&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(PORT_MAITRE);
-	addr.sin_addr = ipv4;
+	
 
 	// Lancement de la connexion: tant que le maître ne répond pas, attendre...
 	while(connect(maitre_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
@@ -767,7 +767,7 @@ void lock_write(void* addr, int size) {
 
 				//Si on reçois la page directement du maître.
 				if(message.type == RETOUR_DEMANDE_PAGE_ENVOIE){
-					printf("[LOCK_READ] Recupération de P%d depuis le maître !\n", i);
+					printf("[LOCK_WRITE] Recupération de P%d depuis le maître !\n", i);
 
 					//On la copie au bonne emplacement.
 					if(recv(maitre_fd, data, PAGE_SIZE, 0) == -1) {
@@ -895,7 +895,7 @@ void unlock_write(void* addr, int size) {
 
 	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
 	if(message.type != ACK){
-		printf("[ERROR][unlock_read] Problème de synchronisation (%d)\n", message.type);
+		printf("[ERROR][UNLOCK_WRITE] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
 	}
 

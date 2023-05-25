@@ -266,6 +266,7 @@ void invalider_page(int fd, struct page* page, int numero) {
 		// Message à envoyer pour invalider les pages
 		message.type = REQUETE_INVALIDE_PAGE;
 		message.debut_page = numero;
+		message.fin_page = numero;
 
 		// Vérifier que l'esclave n'est pas l'ancien écrivain (on ne veut pas invalider la page de la personne qui possède la version à jour de la page)
 		if(lecteur->esclave != page->ancient_ecrivain){
@@ -277,14 +278,14 @@ void invalider_page(int fd, struct page* page, int numero) {
 			}
 
 			// On se connecte à l'esclave sur son port d'écoute, on réessaie tant que l'on n'a pas été connectés
-			printf("[INVAL] Ouverture de connexion avec M%d\n", lecteur->esclave->fd);
+			printf("[INVAL] Ouverture de connexion avec le socket d'esclave : %d\n", lecteur->esclave->fd);
 			while(connect(socket_esclave, (struct sockaddr*)&lecteur->esclave->info, sizeof(lecteur->esclave->info)) == -1) {
 				perror("[ERROR][invalider_page] connect");
 				sleep(2);
 			}
 
 			// On envoie la requête d'invalidation
-			printf("[INVAL] Envoie d'invalidation de P%d à M%d\n", numero, socket_esclave);
+			printf("[INVAL] Envoie d'invalidation de P%d au socket %d\n", numero, socket_esclave);
 			if(send(socket_esclave, &message, sizeof(struct message), 0) == -1) {
 				perror("[ERROR][invalider_page] send");
 				exit(1);

@@ -7,8 +7,8 @@
 
 #define LECTURE				1
 #define ECRITURE			2
-#define ECRITURE_ENTIERE	3
-#define LECTURE_ENTIERE		4
+#define ECRITURE_ENTIERE	4
+#define LECTURE_ENTIERE		3
 #define TERMINAISON			5
 #define ERROR				-1
 
@@ -42,12 +42,13 @@ int main(int argc, char **argv) {
 					choix = ERROR;
 				}
 			}
+			printf("\n%d\n", choix);
 		} while(choix == ERROR || *p != '\n');
 
 		switch(choix) {
 		case LECTURE:
 			// Etape 2 : Savoir lire en demandant aux maître et gérer les défaut de page en lecture
-			printf("Lecture d'une donnée au sein du tableau 'data'...\nVeuillez choisir un entier [0 - %d[.\n> Votre choix ? ", TAB_SIZE);
+			printf("Lecture d'une donnée au sein du tableau 'data'...\nVeuillez choisir un entier [0 - %d].\n> Votre choix ? ", TAB_SIZE);
 			do {
 				fgets(tmp, sizeof(tmp), stdin);
 				if((v1 = strtol(tmp, &p, 10)) == 0) {
@@ -55,19 +56,19 @@ int main(int argc, char **argv) {
 						v1 = ERROR;
 				}
 				if(v1 < 0 || v1 >= TAB_SIZE) {
-					printf("Veuillez choisir un entier conforme (entre [0 - %d[)...\nVotre choix ? ", TAB_SIZE);
+					printf("Veuillez choisir un entier conforme (entre [0 - %d])...\nVotre choix ? ", TAB_SIZE);
 				}
 			} while(v1 == ERROR || *p != '\n' || v1 < 0 || v1 >= TAB_SIZE);
 
 			lock_read(&local_data->data[v1], sizeof(local_data->data[v1]));
-			printf("Résultat: data[%d] = %d\nAttendre de 5 secondes...\n", v1, local_data->data[v1]);
-			sleep(5);
+			printf("Résultat: data[%d] = %d\nAttendre de 2 secondes...\n", v1, local_data->data[v1]);
+			sleep(2);
 			unlock_read(&local_data->data[v1],  sizeof(local_data->data[v1]));
 			break;
 
 		case ECRITURE:
 			// Etape 3 : Savoir écrire et demander aux maitre
-			printf("Ecriture d'une donnée au sein du tableau 'data'...\nVeuillez choisir un entier [0 - %d[.\n> Votre choix ? ", TAB_SIZE);
+			printf("Ecriture d'une donnée au sein du tableau 'data'...\nVeuillez choisir un entier [0 - %d].\n> Votre choix ? ", TAB_SIZE);
 			do {
 				fgets(tmp, sizeof(tmp), stdin);
 				if((v1 = strtol(tmp, &p, 10)) == 0) {
@@ -75,7 +76,7 @@ int main(int argc, char **argv) {
 						v1 = ERROR;
 				}
 				if(v1 < 0 || v1 >= TAB_SIZE) {
-					printf("Veuillez choisir un entier conforme (entre [0 - %d[)...\nVotre choix ? ", TAB_SIZE);
+					printf("Veuillez choisir un entier conforme (entre [0 - %d])...\nVotre choix ? ", TAB_SIZE);
 				}
 			} while(v1 == ERROR || *p != '\n' || v1 < 0 || v1 >= TAB_SIZE);
 
@@ -90,8 +91,8 @@ int main(int argc, char **argv) {
 
 			lock_write(&local_data->data[v1], sizeof(local_data->data[v1]));
 			local_data->data[v1] = v2;
-			printf("\nAttente de 5 secondes...\n");
-			sleep(5);
+			printf("\nAttente de 2 secondes...\n");
+			sleep(2);
 			unlock_write(&local_data->data[v1], sizeof(local_data->data[v1]));
 			break;
 
@@ -100,8 +101,8 @@ int main(int argc, char **argv) {
 			for(int i = 0; i< TAB_SIZE; i++){
 				printf("%d ", local_data->data[i]);
 			}
-			printf("\nAttendre de 5 secondes...\n");
-			sleep(5);
+			printf("\nAttendre de 2 secondes...\n");
+			sleep(2);
 			unlock_read(local_data, sizeof(struct data));
 			break;
 
@@ -110,8 +111,8 @@ int main(int argc, char **argv) {
 			for(int i = 0; i< TAB_SIZE; i++){
 				local_data->data[i] = i+10;
 			}
-			printf("\nAttendre de 5 secondes...\n");
-			sleep(5);
+			printf("\nAttendre de 2 secondes...\n");
+			sleep(2);
 			unlock_write(local_data, sizeof(struct data));
 			break;
 
