@@ -93,9 +93,7 @@ void* LoopSlave(void * port){
 
 			// Les pages qu'on possède ont été invalidées par un autre esclave
 			case REQUETE_INVALIDE_PAGE:
-				for(int i=0 ; i<msg.fin_page ; i++) {
-					printf("[INVAL] Demande d'invalidition d'une page: P%d\n", i);
-				}
+				printf("[INVAL] Demande d'invalidition d'une page: P%d\n", msg.debut_page);
 
 				temp_memoire = trouver_mem_page(msg.debut_page);
 				temp_memoire->validite = 0;
@@ -965,7 +963,7 @@ void endSlave(void* data, int size){
 		}
 
 		// Retirer les droits sur la page concernée
-		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
+		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){^
 			perror("[ERROR][endSlave] mprotect (2)");
 			exit(1);
 		}
