@@ -119,9 +119,7 @@ void* LoopSlave(void * port){
 
 			// Un esclave nous demande nos pages
 			case REQUETE_DEMANDE_PAGE:
-				for(int i=0 ; i<msg.debut_page ; i++) {
-					printf("[ENVOI] Demande de récupération d'une page: envoi de P%d à M%d\n", i, esclave_FD);
-				}
+				printf("[ENVOI] Demande de récupération d'une page: envoi de P%d à M%d\n", msg.debut_page, esclave_FD);
 
 				// Adresse de la page demandée
 				addr_page =  region + (msg.debut_page * PAGE_SIZE);
