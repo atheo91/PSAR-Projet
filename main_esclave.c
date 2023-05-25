@@ -42,7 +42,6 @@ int main(int argc, char **argv) {
 					choix = ERROR;
 				}
 			}
-			printf("\n%d\n", choix);
 		} while(choix == ERROR || *p != '\n');
 
 		switch(choix) {

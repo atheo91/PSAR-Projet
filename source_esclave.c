@@ -396,7 +396,7 @@ void set_userfaultfd(int num_page) {
 
 	// Enregistrer la plage de mémoire du mappage que nous venons de créer pour qu'elle soit gérée par l'objet userfaultfd
 	// UFFDIO_REGISTER_MODE_MISSING: l'espace utilisateur reçoit une notification de défaut de page en cas d'accès à une page manquante (les pages qui n'ont pas encore fait l'objet d'une faute)
-	// UFFDIO_REGISTER_MODE_WP: l'espace utilisateur reçoit une notification de défaut de page lorsqu'une page protégée en écriture est écrite. Nécéssaire pour le handle de défaut de page
+	// UFFDIO_REGISTER_MODE_WP: l'espace utilisateur reçoit une notification de défaut de page lorsqu'une page protégée en écriture est écriite. Nécéssaire pour le handle de défaut de page
 	uffdio_register.range.start = (unsigned long)region;	// Début de la zone mémoire
 	uffdio_register.range.len = num_page * PAGE_SIZE;		// Taille de la zone (nombre de page x taille d'une page): il faut que ce soit un multiple de PAGE_SIZE, sinon UFFDIO_REGISTER ne marchera pas
 	uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING;
@@ -529,10 +529,10 @@ void lock_read(void* addr, int size) {
 	printf("[LOCK_READ] Fin attente\n");
 
 	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-	if(message.type != ACK){
+	/*if(message.type != ACK){
 		printf("[ERROR][lock_read] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
-	}
+	}*/
 
 	printf("[LOCK_READ] Je peux accéder à(aux) page(s) !\n");
 
@@ -633,10 +633,10 @@ void lock_read(void* addr, int size) {
 		}
 
 		//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-		if(message.type != ACK){
+		/*if(message.type != ACK){
 			printf("[ERROR][lock_read] Problème de synchronisation (%d)\n", message.type);
 			exit(1);
-		}
+		}*/
 
 	}
 
@@ -691,10 +691,10 @@ void unlock_read(void* addr, int size) {
 	}
 
 	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-	if(message.type != ACK){
+	/*if(message.type != ACK){
 		printf("[ERROR][unlock_read] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
-	}
+	}*/
 
 	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
@@ -732,10 +732,10 @@ void lock_write(void* addr, int size) {
 	printf("[LOCK_WRITE] Fin attente.\n");
 
 	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-	if(message.type != ACK){
+	/*if(message.type != ACK){
 		printf("[ERROR][lock_write] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
-	}
+	}*/
 
 	printf("[LOCK_WRITE] Je peux accéder à(aux) page(s) !\n");
 
@@ -836,10 +836,10 @@ void lock_write(void* addr, int size) {
 		}
 
 		//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-		if(message.type != ACK){
+		/*if(message.type != ACK){
 			printf("[ERROR][lock_write] Problème de synchronisation (%d)\n", message.type);
 			exit(1);
-		}
+		}*/
 	}	
 
 	//Rend le mutex pour avoir d'autres actions lock/unlock
@@ -892,10 +892,10 @@ void unlock_write(void* addr, int size) {
 	}
 
 	//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-	if(message.type != ACK){
+	/*if(message.type != ACK){
 		printf("[ERROR][UNLOCK_WRITE] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
-	}
+	}*/
 
 	//Rend le mutex pour avoir d'autres actions lock/unlock
 	pthread_mutex_unlock(&mutex_esclave);
@@ -963,7 +963,7 @@ void endSlave(void* data, int size){
 		}
 
 		// Retirer les droits sur la page concernée
-		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){^
+		if(mprotect(data, PAGE_SIZE, PROT_NONE) != 0){
 			perror("[ERROR][endSlave] mprotect (2)");
 			exit(1);
 		}
@@ -980,10 +980,10 @@ void endSlave(void* data, int size){
 		exit(1);
 	}
 
-	if(message.type != ACK){
+	/*if(message.type != ACK){
 		printf("[ERROR][endSlave] Problème de synchronisation (%d)\n", message.type);
 		exit(1);
-	}
+	}*/
 
 	// Fermeture de la connexion
 	if(shutdown(maitre_fd, SHUT_RDWR) == -1){

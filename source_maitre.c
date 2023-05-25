@@ -296,10 +296,10 @@ void invalider_page(int fd, struct page* page, int numero) {
 				perror("[ERROR][invalider_page] recv");
 				exit(1);
 			}
-			if(message.type != ACK) {
+			/*if(message.type != ACK) {
 				printf("[ERROR][invalider_page] Problème de synchronisation (%d)\n", message.type);
 				exit(1);
-			}
+			}*/
 
 			//Fermeture de la connexion
 			if(shutdown(socket_esclave, SHUT_RDWR) == -1){
@@ -395,10 +395,10 @@ void do_lock_read(struct message message, struct esclave* esclave) {
 				}
 
 				// On vérifie que le message reçu est bien la confirmation recherchée
-				if(requete.type != ACK){
+				/*if(requete.type != ACK){
 					printf("[ERROR][do_lock_read] Problème de synchronisation (%d)\n", requete.type);
 					exit(1);
-				}
+				}*/
 			}
 		// Dans le cas où l'esclave est dans le cache ou qu'il est l'écrivain actuel... pas besoin d'envoyer, sa page est déjà à jour
 		}
@@ -533,10 +533,10 @@ void do_lock_write(struct message message, struct esclave* esclave) {
 				}
 
 				//On vérifie que le message reçu est bien la confirmation rechercher et pas quelque chose de random (Vérification de synchronisation).
-				if(requete.type != ACK){
+				/*if(requete.type != ACK){
 					printf("[ERROR][do_lock_write] Problème de synchronisation (%d)\n", requete.type);
 					exit(1);
-				}
+				}*/
 			}
 		//Dans le cas où l'esclave est dans le cache ou qu'il est l'écrivain actuel... pas besoin d'envoyer, sa page est deja à jour.
 		}else{
